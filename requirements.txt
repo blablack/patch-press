@@ -1,0 +1,11 @@
+pedalboard
+mido
+numpy
+soundfile
+lxml
+pyyaml
+
+# dev
+black
+flake8
+isort

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# WIP — not up to date, use requirements.txt
+[project]
+name = "patch-press"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "dawdreamer",
+    "numpy",
+    "soundfile",
+    "lxml",
+    "tqdm",
+]
+
+[project.scripts]
+patch-press = "patch_press.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patch_press"]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E203"]

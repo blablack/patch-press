@@ -1,0 +1,26 @@
+# Example: sample a single VST preset and export to Deluge
+source:
+  type: vst
+  plugin: /path/to/Diva.vst3
+  preset: "PAD Warmth"
+  # fx_chain:
+  #   - /path/to/TapeEmulation.vst3
+
+profile: synth
+
+# capture:          # uncomment to override profile defaults
+#   note_range: [24, 96]
+#   note_step: 3
+#   velocities: [100]
+#   duration_s: 8
+#   release_tail_s: 5
+
+# analysis:
+#   loop: true
+#   loop_quality_threshold: 0.8
+#   normalize: per_set
+
+output:
+  format: deluge
+  path: /Volumes/DELUGE/SYNTHS/Diva/Pads
+  name: Diva_Warmth

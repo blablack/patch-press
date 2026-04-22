@@ -1,0 +1,14 @@
+category: drum
+
+capture:
+  note_range: [21, 108]
+  note_step: 1
+  velocities: [64, 100, 127]
+  round_robins: 3
+  duration_s: 2
+  release_tail_s: 1
+
+analysis:
+  loop: false
+  normalize: per_sample
+  classify_drums: true

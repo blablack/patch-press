@@ -1,0 +1,11 @@
+source:
+  type: vst
+  plugin: test_plugins/Dexed.vst3
+  # no preset: uses Dexed's default (first preset, "BRASS   1")
+
+profile: synth
+
+output:
+  format: deluge
+  path: /tmp/patch-press-out/Dexed
+  name: Dexed_First

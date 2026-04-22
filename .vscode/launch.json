@@ -1,0 +1,43 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "patch-press sample ANALOG_1",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "sample",
+                "output/configs/Dexed/ANALOG_1.yaml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "patch-press scan Dexed",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "scan",
+                "output/test_plugins/Dexed.vst3",
+                "output/configs/Dexed",
+                "--deluge-path",
+                "output/Dexed"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
