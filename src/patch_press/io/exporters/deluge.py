@@ -62,7 +62,7 @@ def _write_xml(root, path: Path) -> None:
 
 class DelugeExporter:
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
-        wav_dir = path / "SAMPLES" / config.name
+        wav_dir = path.parent / "SAMPLES" / path.name / config.name
         xml_path = path / f"{config.name}.xml"
         wav_paths = _write_wavs(sset, wav_dir)
 
