@@ -24,7 +24,7 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         analysis = replace(config.analysis, pitch_verify=False)
     elif isinstance(config.source, LibrarySourceConfig):
         adapter = LibraryAdapter(config.source)
-        sset = adapter.capture(name=config.name or None)
+        sset = adapter.capture(name=config.name or None, max_round_robins=config.capture.round_robins, note_step=config.capture.note_step)
         analysis = config.analysis
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")

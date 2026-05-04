@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import yaml
+from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 
@@ -140,11 +141,11 @@ def scan_from_probe(
     if not state_map:
         raise RuntimeError(f"No preset YAMLs found in {probe_dir}")
 
-    log.info("Loading plugin: %s", plugin_path)
+    tqdm.write(f"Loading plugin: {plugin_path}")
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:10]
+        presets = presets[:3]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -154,8 +155,7 @@ def scan_from_probe(
 
     _total_s = LONG_HOLD_S + probe_release_s
 
-    for i, preset_name in enumerate(presets, 1):
-        log.info("  [%d/%d] %s", i, summary.total, preset_name)
+    for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
         adapter._apply_preset(preset_name)
         short_audio = adapter.render_note(
             probe_note, probe_velocity, SHORT_HOLD_S, _total_s
@@ -171,7 +171,7 @@ def scan_from_probe(
                 import numpy as np
 
                 if np.allclose(_prev_audio.data, long_audio.data, atol=1e-6):
-                    log.warning(
+                    tqdm.write(
                         "WARNING: first two presets produced identical audio — "
                         "raw_state restore may not be working for this plugin."
                     )
@@ -260,13 +260,12 @@ def scan_library(
         p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith(".")
     )
     if debug:
-        subfolders = subfolders[:10]
+        subfolders = subfolders[:3]
     summary = ScanSummary(total=len(subfolders))
 
-    for i, subfolder in enumerate(subfolders, 1):
+    for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
         loop = _detect_loop_for_folder(subfolder, library_type)
-        label = "loop" if loop else "one-shot"
-        log.info("  [%d/%d] %s → %s", i, summary.total, subfolder.name, label)
+        tqdm.write(f"  {subfolder.name} → {'loop' if loop else 'one-shot'}")
         safe_name = _sanitize(subfolder.name)
 
         capture_block = (

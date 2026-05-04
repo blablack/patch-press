@@ -29,18 +29,18 @@ class LibraryAdapter:
     def __init__(self, config: LibrarySourceConfig):
         self._config = config
 
-    def capture(self, name: str | None = None) -> SampleSet:
+    def capture(self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1) -> SampleSet:
         path = self._config.path
         sset_name = name or path.name
         wavs = sorted(path.glob("*.wav"))
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
         if wavs:
-            return self._load_multisample(sset_name, path, wavs)
+            return self._load_multisample(sset_name, path, wavs, max_round_robins, note_step)
         if subdirs:
-            return self._load_kit(sset_name, path, subdirs)
+            return self._load_kit(sset_name, path, subdirs, max_round_robins)
         raise ValueError(f"No WAV files or subdirectories found in {path}")
 
-    def _load_multisample(self, name: str, path: Path, wavs: list[Path]) -> SampleSet:
+    def _load_multisample(self, name: str, path: Path, wavs: list[Path], max_round_robins: int = 1, note_step: int = 1) -> SampleSet:
         # Group by note → {rr_index_or_None: path}
         # None key = base file (no RR suffix); numbered keys = round robins
         groups: dict[int, dict[int | None, Path]] = {}
@@ -51,14 +51,23 @@ class LibraryAdapter:
             note, rr = result
             groups.setdefault(note, {})[rr] = wav
 
+        # Thin notes to at least note_step semitones apart (greedy, low-to-high).
+        all_notes = sorted(groups)
+        if note_step > 1:
+            thinned: list[int] = []
+            for note in all_notes:
+                if not thinned or note - thinned[-1] >= note_step:
+                    thinned.append(note)
+            all_notes = thinned
+
         samples: list[Sample] = []
-        for note in sorted(groups):
+        for note in all_notes:
             files = groups[note]
             numbered = {k: v for k, v in files.items() if k is not None}
             base = files.get(None)
 
             if numbered:
-                for rr_idx, wav in sorted(numbered.items()):
+                for rr_idx, wav in sorted(numbered.items())[:max_round_robins]:
                     samples.append(Sample(
                         note=note, velocity=100, round_robin=rr_idx,
                         audio=AudioBuffer.from_file(wav),
@@ -76,13 +85,13 @@ class LibraryAdapter:
             samples=samples, source_metadata={"path": str(path)},
         )
 
-    def _load_kit(self, name: str, path: Path, subdirs: list[Path]) -> SampleSet:
+    def _load_kit(self, name: str, path: Path, subdirs: list[Path], max_round_robins: int = 1) -> SampleSet:
         samples: list[Sample] = []
         for subdir in subdirs:
             wavs = sorted(subdir.glob("*.wav"))
             result = _parse_note_rr(subdir.name)
             note = result[0] if result else 48
-            for rr, wav in enumerate(wavs, start=1):
+            for rr, wav in enumerate(wavs[:max_round_robins], start=1):
                 samples.append(Sample(
                     note=note, velocity=100, round_robin=rr,
                     audio=AudioBuffer.from_file(wav),

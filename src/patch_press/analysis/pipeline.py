@@ -3,6 +3,8 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
+from tqdm import tqdm
+
 
 def _init_worker(level: int) -> None:
     logging.basicConfig(level=level, format="%(message)s")
@@ -20,9 +22,6 @@ log = logging.getLogger(__name__)
 
 
 def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
-    logging.info(
-        f"Analyzing: note {sample.note} ; velocity {sample.velocity} ; rr {sample.round_robin}"
-    )
     audio = sample.audio
     analysis = dict(sample.analysis)
 
@@ -34,12 +33,6 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     if config.pitch_verify:
         result = verify_pitch(audio, sample.note, config.pitch_tolerance_cents)
         analysis.update(result)
-        if not result.get("pitch_ok", True):
-            log.warning(
-                "  WARNING note %s: pitch mismatch (%s cents off)",
-                sample.note,
-                result.get("cents_diff", "?"),
-            )
 
     loop_points = sample.loop_points
     if config.loop:
@@ -64,8 +57,17 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
 
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
     level = logging.getLogger().getEffectiveLevel()
+    analyzed: list[Sample] = []
+
     with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
-        analyzed = list(executor.map(partial(_analyze_one, config=config), sset.samples))
+        with tqdm(total=len(sset.samples), desc="Analyzing", unit="sample", leave=False) as pbar:
+            for sample in executor.map(partial(_analyze_one, config=config), sset.samples):
+                analyzed.append(sample)
+                if config.pitch_verify and not sample.analysis.get("pitch_ok", True):
+                    cents = sample.analysis.get("cents_diff", "?")
+                    tqdm.write(f"  WARNING note {sample.note}: pitch mismatch ({cents} cents off)")
+                pbar.set_postfix(note=sample.note, vel=sample.velocity, rr=sample.round_robin)
+                pbar.update(1)
 
     if sset.category == Category.DRUM and config.classify_drums:
         analyzed = [

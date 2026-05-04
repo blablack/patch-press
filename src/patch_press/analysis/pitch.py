@@ -30,6 +30,8 @@ def detect_pitch(
         return None
 
     segment = mono[start:end]
+    if segment.std() < 1e-4:  # near-silent — no reliable pitch
+        return None
     n = len(segment)
     windowed = segment * np.hanning(n)
     fft = np.fft.rfft(windowed, n=2 * n)
@@ -56,11 +58,14 @@ def verify_pitch(
         return {"pitch_ok": False, "reason": "detection_failed"}
 
     cents_diff = 1200 * np.log2(detected_hz / expected_hz)
-    ok = bool(abs(cents_diff) <= tolerance_cents)
+    # Fold to [-600, 600] to ignore octave ambiguity in the autocorrelation detector.
+    # A sample at C4 detected as C3 gives 0 cents error, not -1200.
+    cents_class = ((cents_diff + 600) % 1200) - 600
+    ok = bool(abs(cents_class) <= tolerance_cents)
     return {
         "pitch_ok": ok,
         "detected_hz": round(detected_hz, 2),
         "expected_hz": round(expected_hz, 2),
         "detected_midi": round(hz_to_midi(detected_hz), 2),
-        "cents_diff": round(float(cents_diff), 1),
+        "cents_diff": round(float(cents_class), 1),
     }

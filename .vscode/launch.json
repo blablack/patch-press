@@ -95,7 +95,7 @@
             "args": [
                 "--debug",
                 "sample",
-                "output/Configs/Odin2/Bassline.yaml",
+                "output/Configs/Odin2/Analog_Bass_tx.yaml",
                 "--path",
                 "output/Deluge/Odin2",
                 "--format",
