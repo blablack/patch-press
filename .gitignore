@@ -1,8 +1,8 @@
 # files
 
 # folders
-archive
 __pycache__
 .venv
-.claude
+
 output
+input

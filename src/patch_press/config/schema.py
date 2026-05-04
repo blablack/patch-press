@@ -8,6 +8,11 @@ class VSTSourceConfig:
     plugin: Path
     preset: Optional[str] = None
     fx_chain: list[Path] = field(default_factory=list)
+    program_index: Optional[int] = None
+    preset_file: Optional[Path] = None
+    raw_state: Optional[str] = None
+    parameter_state: dict = field(default_factory=dict)
+    preset_source: Optional[str] = None
 
 
 @dataclass
@@ -39,8 +44,6 @@ class AnalysisConfig:
 
 @dataclass
 class OutputConfig:
-    format: str
-    path: Path
     name: str
 
 

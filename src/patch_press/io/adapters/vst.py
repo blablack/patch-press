@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 from mido import Message
 from pedalboard import load_plugin
@@ -10,14 +12,29 @@ _SAMPLE_RATE = 44100
 
 
 class VSTAdapter:
-    def __init__(self, config: VSTSourceConfig):
+    def __init__(
+        self,
+        config: VSTSourceConfig,
+        state_map: dict[str, VSTSourceConfig] | None = None,
+    ):
         self.plugin = load_plugin(str(config.plugin))
-        if config.preset is not None:
-            self.plugin.program = config.preset
+        if state_map is not None:
+            self._state_map = state_map
+        elif config.raw_state and config.preset:
+            self._state_map = {config.preset: config}
+        else:
+            raise ValueError(
+                "VSTAdapter requires either state_map or a config with both raw_state and preset"
+            )
         self._config = config
 
     def list_presets(self) -> list[str]:
-        return list(self.plugin.parameters["program"].valid_values)
+        return list(self._state_map.keys())
+
+    def _apply_preset(self, preset: str) -> None:
+        import base64
+
+        self.plugin.raw_state = base64.b64decode(self._state_map[preset].raw_state)
 
     def probe_preset(
         self,
@@ -26,8 +43,8 @@ class VSTAdapter:
         velocity: int = 100,
         hold_s: float = 6.0,
         release_s: float = 4.0,
-    ) -> "AudioBuffer":
-        self.plugin.program = preset
+    ) -> AudioBuffer:
+        self._apply_preset(preset)
         raw = self.plugin(
             [
                 Message("note_on", note=note, velocity=velocity),
@@ -53,6 +70,7 @@ class VSTAdapter:
         for note in range(note_lo, note_hi + 1, capture.note_step):
             for vel in capture.velocities:
                 for rr in range(1, capture.round_robins + 1):
+                    self._apply_preset(preset_name)
                     raw = self.plugin(
                         [
                             Message("note_on", note=note, velocity=vel),
@@ -61,7 +79,6 @@ class VSTAdapter:
                         duration=duration,
                         sample_rate=_SAMPLE_RATE,
                     )
-                    # pedalboard returns (channels, frames) or (frames,)
                     if raw.ndim == 1:
                         data = np.stack([raw, raw]).astype(np.float32)
                     else:

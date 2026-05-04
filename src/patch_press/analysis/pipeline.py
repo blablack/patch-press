@@ -1,3 +1,12 @@
+import logging
+import os
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+
+
+def _init_worker(level: int) -> None:
+    logging.basicConfig(level=level, format="%(message)s")
+
 from ..config.schema import AnalysisConfig
 from ..model.sample import Category, Sample, SampleSet
 from .classify import classify_drum
@@ -7,8 +16,13 @@ from .normalize import normalize_sample, normalize_set
 from .pitch import verify_pitch
 from .trim import trim_silence
 
+log = logging.getLogger(__name__)
+
 
 def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
+    logging.info(
+        f"Analyzing: note {sample.note} ; velocity {sample.velocity} ; rr {sample.round_robin}"
+    )
     audio = sample.audio
     analysis = dict(sample.analysis)
 
@@ -21,9 +35,10 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         result = verify_pitch(audio, sample.note, config.pitch_tolerance_cents)
         analysis.update(result)
         if not result.get("pitch_ok", True):
-            print(
-                f"  WARNING note {sample.note}: pitch mismatch "
-                f"({result.get('cents_diff', '?')} cents off)"
+            log.warning(
+                "  WARNING note %s: pitch mismatch (%s cents off)",
+                sample.note,
+                result.get("cents_diff", "?"),
             )
 
     loop_points = sample.loop_points
@@ -47,8 +62,10 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     )
 
 
-def analyze_sampleset(sset: SampleSet, config: AnalysisConfig) -> SampleSet:
-    analyzed = [_analyze_one(s, config) for s in sset.samples]
+def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
+    level = logging.getLogger().getEffectiveLevel()
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
+        analyzed = list(executor.map(partial(_analyze_one, config=config), sset.samples))
 
     if sset.category == Category.DRUM and config.classify_drums:
         analyzed = [

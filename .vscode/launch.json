@@ -5,13 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "patch-press sample ANALOG_1",
+            "name": "patch-press - scan-from-probe Dexed",
             "type": "debugpy",
             "request": "launch",
             "module": "patch_press.cli",
             "args": [
-                "sample",
-                "output/configs/Dexed/ANALOG_1.yaml"
+                "--debug",
+                "scan-from-probe",
+                "/home/blablack/src/patch-probe/output/Dexed",
+                "output/Configs/Dexed",
+                "--quality",
+                "low"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -21,16 +25,105 @@
             "justMyCode": true
         },
         {
-            "name": "patch-press scan Dexed",
+            "name": "patch-press: scan-from-probe Odin2",
             "type": "debugpy",
             "request": "launch",
             "module": "patch_press.cli",
             "args": [
-                "scan",
-                "output/test_plugins/Dexed.vst3",
-                "output/configs/Dexed",
-                "--deluge-path",
-                "output/Dexed"
+                "--debug",
+                "scan-from-probe",
+                "/home/blablack/src/patch-probe/output/Odin2",
+                "output/Configs/Odin2",
+                "--quality",
+                "high"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "patch-press: sample Dexed",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "--debug",
+                "sample",
+                "output/Configs/Dexed/Beatmehrdr.yaml",
+                "--path",
+                "output/Deluge/Dexed",
+                "--format",
+                "deluge",
+                "--workers",
+                "8"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "patch-press: sample Odin2",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "--debug",
+                "sample",
+                "output/Configs/Odin2/Bassline.yaml",
+                "--path",
+                "output/Deluge/Odin2",
+                "--format",
+                "deluge",
+                "--workers",
+                "8"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "patch-press: scan library",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "--debug",
+                "scan-library",
+                "input/Mini From Mars",
+                "output/Configs/Mini From Mars",
+                "--type",
+                "multisample"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "patch-press: sample library",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "sample",
+                "output/Configs/Mini From Mars/3_Stack_Bass.yaml",
+                "--path",
+                "output/Deluge/Mini From Mars",
+                "--format",
+                "deluge",
+                "--workers",
+                "8"
             ],
             "cwd": "${workspaceFolder}",
             "env": {

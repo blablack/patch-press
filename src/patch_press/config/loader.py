@@ -36,6 +36,11 @@ def load_config(path: Path) -> RunConfig:
             plugin=Path(src["plugin"]),
             preset=src.get("preset"),
             fx_chain=[Path(p) for p in src.get("fx_chain", [])],
+            program_index=src.get("program_index"),
+            preset_file=Path(src["preset_file"]) if src.get("preset_file") else None,
+            raw_state=src.get("raw_state"),
+            parameter_state=src.get("parameter_state") or {},
+            preset_source=src.get("preset_source"),
         )
     elif src["type"] == "library":
         source = LibrarySourceConfig(
@@ -68,8 +73,6 @@ def load_config(path: Path) -> RunConfig:
 
     out = raw["output"]
     output = OutputConfig(
-        format=out["format"],
-        path=Path(out["path"]),
         name=out["name"],
     )
 
