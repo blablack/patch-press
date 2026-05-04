@@ -129,7 +129,7 @@ class DelugeExporter:
         dp = etree.SubElement(
             sound, "defaultParams",
             arpeggiatorGate="0x00000000", portamento="0x80000000",
-            compressorShape="0xDC28F5B2", oscAVolume="0x7FFFFFFF",
+            compressorShape="0xDC28F5B2", oscAVolume="0x4CCCCCC4",
             oscAPulseWidth="0x00000000", oscBVolume="0x80000000",
             oscBPulseWidth="0x00000000", noiseVolume="0x80000000",
             volume="0x4CCCCCA8", pan="0x00000000",
