@@ -36,6 +36,27 @@ class VSTAdapter:
 
         self.plugin.raw_state = base64.b64decode(self._state_map[preset].raw_state)
 
+    def render_note(
+        self,
+        note: int,
+        velocity: int,
+        hold_s: float,
+        total_s: float,
+    ) -> AudioBuffer:
+        raw = self.plugin(
+            [
+                Message("note_on", note=note, velocity=velocity),
+                Message("note_off", note=note, time=hold_s),
+            ],
+            duration=total_s,
+            sample_rate=_SAMPLE_RATE,
+        )
+        if raw.ndim == 1:
+            data = np.stack([raw, raw]).astype(np.float32)
+        else:
+            data = raw.astype(np.float32)
+        return AudioBuffer(data=data, sample_rate=_SAMPLE_RATE)
+
     def probe_preset(
         self,
         preset: str,
@@ -45,19 +66,7 @@ class VSTAdapter:
         release_s: float = 4.0,
     ) -> AudioBuffer:
         self._apply_preset(preset)
-        raw = self.plugin(
-            [
-                Message("note_on", note=note, velocity=velocity),
-                Message("note_off", note=note, time=hold_s),
-            ],
-            duration=hold_s + release_s,
-            sample_rate=_SAMPLE_RATE,
-        )
-        if raw.ndim == 1:
-            data = np.stack([raw, raw]).astype(np.float32)
-        else:
-            data = raw.astype(np.float32)
-        return AudioBuffer(data=data, sample_rate=_SAMPLE_RATE)
+        return self.render_note(note, velocity, hold_s, hold_s + release_s)
 
     def capture(self, capture: CaptureConfig, name: str | None = None) -> SampleSet:
         preset_name = self._config.preset or self.plugin.name

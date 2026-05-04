@@ -10,7 +10,13 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-from ..analysis.probe import ProbeResult, probe
+from ..analysis.probe import (
+    LONG_HOLD_S,
+    SHORT_HOLD_S,
+    ProbeResult,
+    classify_sustain_type,
+    probe,
+)
 from ..config.schema import VSTSourceConfig
 from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
@@ -138,7 +144,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:5]
+        presets = presets[:10]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -146,29 +152,33 @@ def scan_from_probe(
     _switching_verified = len(presets) < 2
     _prev_audio: AudioBuffer | None = None
 
+    _total_s = LONG_HOLD_S + probe_release_s
+
     for i, preset_name in enumerate(presets, 1):
         log.info("  [%d/%d] %s", i, summary.total, preset_name)
-        audio = adapter.probe_preset(
-            preset_name,
-            probe_note,
-            probe_velocity,
-            q.probe_hold_s,
-            probe_release_s,
+        adapter._apply_preset(preset_name)
+        short_audio = adapter.render_note(
+            probe_note, probe_velocity, SHORT_HOLD_S, _total_s
         )
+        long_audio = adapter.render_note(
+            probe_note, probe_velocity, LONG_HOLD_S, _total_s
+        )
+
         if not _switching_verified:
             if _prev_audio is None:
-                _prev_audio = audio
+                _prev_audio = long_audio
             else:
                 import numpy as np
 
-                if np.allclose(_prev_audio.data, audio.data, atol=1e-6):
+                if np.allclose(_prev_audio.data, long_audio.data, atol=1e-6):
                     log.warning(
                         "WARNING: first two presets produced identical audio — "
                         "raw_state restore may not be working for this plugin."
                     )
                 _switching_verified = True
 
-        result = probe(audio, q.probe_hold_s)
+        sustains = classify_sustain_type(short_audio, long_audio)
+        result = probe(long_audio, LONG_HOLD_S, sustains_hint=sustains)
         if result.sustains:
             if result.loop:
                 result = replace(result, duration_s=loop_capture_s)
@@ -250,7 +260,7 @@ def scan_library(
         p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith(".")
     )
     if debug:
-        subfolders = subfolders[:5]
+        subfolders = subfolders[:10]
     summary = ScanSummary(total=len(subfolders))
 
     for i, subfolder in enumerate(subfolders, 1):

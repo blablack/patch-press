@@ -11,6 +11,41 @@ _SILENCE_DB = -40.0
 _QUIET_DB = -20.0
 _LOOP_THRESHOLD = 0.7
 
+SHORT_HOLD_S = 2.0
+LONG_HOLD_S = 10.0
+_SUSTAIN_RATIO_THRESHOLD = 5.0
+
+
+def classify_sustain_type(
+    short_buf: AudioBuffer,
+    long_buf: AudioBuffer,
+    note_off_s: float = LONG_HOLD_S,
+    window_s: float = 1.0,
+) -> bool:
+    """
+    Determine if a VST instrument sustains by comparing two renders of the same note:
+    - short_buf: note_off at SHORT_HOLD_S, rendered to note_off_s + window_s
+    - long_buf:  note_off at note_off_s, rendered to the same total duration
+
+    At the note_off_s window, the short render has had 8+ seconds of silence after
+    release, so any remaining energy there would be artifact/noise. The long render
+    is right at note release. A sustained instrument has energy in long but not short;
+    a pluck is silent in both because it decayed naturally regardless of note_off.
+    """
+    sr = long_buf.sample_rate
+    start = int(note_off_s * sr)
+    end = start + int(window_s * sr)
+
+    def _window_rms(buf: AudioBuffer) -> float:
+        if buf.data.shape[1] <= start:
+            return 0.0
+        seg = buf.data[:, start : min(end, buf.data.shape[1])]
+        return float(np.sqrt(np.mean(seg**2)))
+
+    rms_short = _window_rms(short_buf)
+    rms_long = _window_rms(long_buf)
+    return (rms_long / (rms_short + 1e-9)) > _SUSTAIN_RATIO_THRESHOLD
+
 
 @dataclass
 class ProbeResult:
@@ -32,7 +67,7 @@ def _rms_envelope(mono: np.ndarray) -> np.ndarray:
     return out
 
 
-def probe(audio: AudioBuffer, note_off_s: float) -> ProbeResult:
+def probe(audio: AudioBuffer, note_off_s: float, sustains_hint: bool | None = None) -> ProbeResult:
     sr = audio.sample_rate
     note_off_hop = int(note_off_s * sr) // _HOP
     mono = audio.data.mean(axis=0)
@@ -52,9 +87,12 @@ def probe(audio: AudioBuffer, note_off_s: float) -> ProbeResult:
     hold_rms = rms[:note_off_hop]
     release_rms = rms[note_off_hop:]
 
-    # Sustaining: still audible in the 2nd half of the hold period?
-    mid = max(1, len(hold_rms) // 2)
-    sustains = bool(np.any(hold_rms[mid:] > silence_thr))
+    if sustains_hint is not None:
+        sustains = sustains_hint
+    else:
+        # Fallback (library sources): still audible in the 2nd half of the hold?
+        mid = max(1, len(hold_rms) // 2)
+        sustains = bool(np.any(hold_rms[mid:] > silence_thr))
 
     # Effective duration
     audible_hold = np.where(hold_rms > silence_thr)[0]
