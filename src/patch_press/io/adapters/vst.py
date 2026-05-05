@@ -80,6 +80,7 @@ class VSTAdapter:
             for vel in capture.velocities:
                 for rr in range(1, capture.round_robins + 1):
                     self._apply_preset(preset_name)
+                    self.plugin.reset()
                     raw = self.plugin(
                         [
                             Message("note_on", note=note, velocity=vel),
