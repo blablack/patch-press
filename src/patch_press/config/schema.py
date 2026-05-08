@@ -29,6 +29,7 @@ class CaptureConfig:
     round_robins: int = 1
     duration_s: float = 4.0
     release_tail_s: float = 2.0
+    tempo_bpm: float = 120.0
 
 
 @dataclass
@@ -38,6 +39,7 @@ class AnalysisConfig:
     pitch_tolerance_cents: float = 50.0
     loop: bool = False
     loop_quality_threshold: float = 0.8
+    tempo_bpm: float | None = None
     normalize: str = "per_set"  # "per_sample" | "per_set" | "none"
     classify_drums: bool = False
 

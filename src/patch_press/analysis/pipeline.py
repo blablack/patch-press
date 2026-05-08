@@ -1,6 +1,6 @@
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 
 from tqdm import tqdm
@@ -36,7 +36,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
 
     loop_points = sample.loop_points
     if config.loop:
-        found = find_loop_points(audio, config.loop_quality_threshold)
+        found = find_loop_points(audio, config.loop_quality_threshold, config.tempo_bpm)
         if found:
             loop_points, quality = found
             analysis["loop_quality"] = round(quality, 3)
@@ -59,9 +59,12 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
     level = logging.getLogger().getEffectiveLevel()
     analyzed: list[Sample] = []
 
+    fn = partial(_analyze_one, config=config)
     with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
+        futures = {executor.submit(fn, s): s for s in sset.samples}
         with tqdm(total=len(sset.samples), desc="Analyzing", unit="sample", leave=False) as pbar:
-            for sample in executor.map(partial(_analyze_one, config=config), sset.samples):
+            for future in as_completed(futures):
+                sample = future.result()
                 analyzed.append(sample)
                 if config.pitch_verify and not sample.analysis.get("pitch_ok", True):
                     cents = sample.analysis.get("cents_diff", "?")

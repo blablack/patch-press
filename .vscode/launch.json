@@ -78,7 +78,7 @@
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -95,13 +95,13 @@
             "args": [
                 "--debug",
                 "sample",
-                "output/Configs/Odin2/Analog_Bass_tx.yaml",
+                "output/Configs/Odin2/Sausage_Bassener.yaml",
                 "--path",
                 "output/Deluge/Odin2",
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -124,7 +124,7 @@
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -147,7 +147,7 @@
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -170,7 +170,7 @@
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {
@@ -193,7 +193,7 @@
                 "--format",
                 "deluge",
                 "--workers",
-                "8"
+                "4"
             ],
             "cwd": "${workspaceFolder}",
             "env": {

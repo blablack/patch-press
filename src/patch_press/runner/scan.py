@@ -26,14 +26,14 @@ from ..model.audio import AudioBuffer
 
 class _QualitySettings(NamedTuple):
     note_step: int
-    probe_hold_s: float
     sustain_duration_s: float
+    min_release_s: float
 
 
 QUALITY: dict[str, _QualitySettings] = {
-    "low": _QualitySettings(note_step=12, probe_hold_s=3.0, sustain_duration_s=2.0),
-    "medium": _QualitySettings(note_step=3, probe_hold_s=6.0, sustain_duration_s=5.0),
-    "high": _QualitySettings(note_step=1, probe_hold_s=15.0, sustain_duration_s=15.0),
+    "low": _QualitySettings(note_step=12, sustain_duration_s=5.0, min_release_s=2.0),
+    "medium": _QualitySettings(note_step=3, sustain_duration_s=15.0, min_release_s=4.0),
+    "high": _QualitySettings(note_step=1, sustain_duration_s=25.0, min_release_s=6.0),
 }
 
 QUALITY_CHOICES = list(QUALITY)
@@ -126,7 +126,6 @@ def scan_from_probe(
     debug: bool = False,
 ) -> ScanSummary:
     q = QUALITY[quality]
-    loop_capture_s = 2.0
     config_dir.mkdir(parents=True, exist_ok=True)
 
     state_map: dict[str, VSTSourceConfig] = {}
@@ -145,7 +144,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:3]
+        presets = presets[:10]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -180,10 +179,11 @@ def scan_from_probe(
         sustains = classify_sustain_type(short_audio, long_audio)
         result = probe(long_audio, LONG_HOLD_S, sustains_hint=sustains)
         if result.sustains:
-            if result.loop:
-                result = replace(result, duration_s=loop_capture_s)
-            else:
-                result = replace(result, duration_s=q.sustain_duration_s)
+            result = replace(
+                result,
+                duration_s=q.sustain_duration_s,
+                release_tail_s=max(result.release_tail_s, q.min_release_s),
+            )
 
         path = _write_config(
             preset_name,
@@ -260,7 +260,7 @@ def scan_library(
         p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith(".")
     )
     if debug:
-        subfolders = subfolders[:3]
+        subfolders = subfolders[:10]
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):

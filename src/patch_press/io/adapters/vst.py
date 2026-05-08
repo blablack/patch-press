@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from mido import Message
 from pedalboard import load_plugin
+from tqdm import tqdm
 
 from ...config.schema import CaptureConfig, VSTSourceConfig
 from ...model.audio import AudioBuffer
@@ -47,6 +48,7 @@ class VSTAdapter:
             [
                 Message("note_on", note=note, velocity=velocity),
                 Message("note_off", note=note, time=hold_s),
+                Message("control_change", control=123, value=0, time=0),
             ],
             duration=total_s,
             sample_rate=_SAMPLE_RATE,
@@ -76,31 +78,45 @@ class VSTAdapter:
         note_lo, note_hi = capture.note_range
         samples: list[Sample] = []
 
-        for note in range(note_lo, note_hi + 1, capture.note_step):
-            for vel in capture.velocities:
-                for rr in range(1, capture.round_robins + 1):
-                    self._apply_preset(preset_name)
-                    self.plugin.reset()
-                    raw = self.plugin(
-                        [
-                            Message("note_on", note=note, velocity=vel),
-                            Message("note_off", note=note, time=capture.duration_s),
-                        ],
-                        duration=duration,
-                        sample_rate=_SAMPLE_RATE,
-                    )
-                    if raw.ndim == 1:
-                        data = np.stack([raw, raw]).astype(np.float32)
-                    else:
-                        data = raw.astype(np.float32)
-                    samples.append(
-                        Sample(
-                            note=note,
-                            velocity=vel,
-                            round_robin=rr,
-                            audio=AudioBuffer(data=data, sample_rate=_SAMPLE_RATE),
+        render_kwargs: dict = {"duration": duration, "sample_rate": _SAMPLE_RATE}
+
+        self._apply_preset(preset_name)
+        # Discard audio to let any deferred preset-init events (e.g. a C3 preview
+        # that Odin2 schedules on state load) fire and decay before real captures.
+        self.plugin([], **render_kwargs)
+        self.plugin.reset()
+
+        notes = range(note_lo, note_hi + 1, capture.note_step)
+        total = len(notes) * len(capture.velocities) * capture.round_robins
+        with tqdm(total=total, desc="Capturing", unit="note", leave=False) as pbar:
+            for note in notes:
+                for vel in capture.velocities:
+                    for rr in range(1, capture.round_robins + 1):
+                        pbar.set_postfix(note=note, vel=vel, rr=rr)
+                        self.plugin.reset()
+                        raw = self.plugin(
+                            [
+                                Message("note_on", note=note, velocity=vel),
+                                Message("note_off", note=note, time=capture.duration_s),
+                                # All Notes Off immediately after: clears mono/legato note
+                                # stack so plugins don't retrigger a previously held note.
+                                Message("control_change", control=123, value=0, time=0),
+                            ],
+                            **render_kwargs,
                         )
-                    )
+                        if raw.ndim == 1:
+                            data = np.stack([raw, raw]).astype(np.float32)
+                        else:
+                            data = raw.astype(np.float32)
+                        samples.append(
+                            Sample(
+                                note=note,
+                                velocity=vel,
+                                round_robin=rr,
+                                audio=AudioBuffer(data=data, sample_rate=_SAMPLE_RATE),
+                            )
+                        )
+                        pbar.update(1)
 
         return SampleSet(
             name=sset_name,

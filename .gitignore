@@ -3,6 +3,7 @@
 # folders
 __pycache__
 .venv
+.claude/
 
 output
 input
