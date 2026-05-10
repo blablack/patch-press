@@ -21,4 +21,4 @@ analysis:
   normalize: per_set
 
 output:
-  name: Diva_Warmth
+  name: Warmth
