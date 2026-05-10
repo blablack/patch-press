@@ -1,9 +1,11 @@
-# Example: export a sample library folder (kit layout) to Deluge
-# Expected folder structure:
+# Sample library in kit layout — one subfolder per instrument, WAVs are RR layers.
+# Expected structure:
 #   /path/to/MyKit/
-#     Kick/    *.wav   (RR layers)
+#     Kick/    *.wav
 #     Snare/   *.wav
 #     HH/      *.wav
+# Run with:
+#   patch-press sample drum_kit.yaml --path /media/DELUGE/KITS --format deluge
 source:
   type: library
   path: /path/to/MyKit
@@ -11,6 +13,4 @@ source:
 profile: drums
 
 output:
-  format: deluge
-  path: /Volumes/DELUGE/KITS
   name: MyKit

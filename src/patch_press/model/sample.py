@@ -27,3 +27,4 @@ class SampleSet:
     category: Category
     samples: list[Sample] = field(default_factory=list)
     source_metadata: dict = field(default_factory=dict)
+    tempo_bpm: float = 120.0

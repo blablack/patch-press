@@ -74,12 +74,6 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
     )
 
 
-def _sanitize_name(name: str) -> str:
-    import re
-
-    return re.sub(r"_+", "_", re.sub(r"[^\w]", "_", name)).strip("_")
-
-
 def cmd_profiles(_args: argparse.Namespace) -> None:
     for name in available_profiles():
         print(name)

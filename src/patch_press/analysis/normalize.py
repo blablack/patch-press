@@ -48,4 +48,5 @@ def normalize_set(sset: SampleSet) -> SampleSet:
         category=sset.category,
         samples=[_apply_gain(s, gain) for s in sset.samples],
         source_metadata=sset.source_metadata,
+        tempo_bpm=sset.tempo_bpm,
     )

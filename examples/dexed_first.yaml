@@ -1,11 +1,24 @@
+# VST preset captured by patch-probe.
+# Run with:
+#   patch-press sample dexed_first.yaml --path /media/DELUGE/SYNTHS/Dexed --format deluge
 source:
   type: vst
-  plugin: test_plugins/Dexed.vst3
-  # no preset: uses Dexed's default (first preset, "BRASS   1")
+  plugin: /path/to/Dexed.vst3
+  preset: "BRASS   1"
+  raw_state: "<base64 state from patch-probe>"
 
 profile: synth
 
+capture:
+  tempo_bpm: 120
+  # note_range: [36, 96]
+  # note_step: 3
+  # velocities: [100]
+  # duration_s: 4.0
+  # release_tail_s: 2.0
+
+analysis:
+  loop: false
+
 output:
-  format: deluge
-  path: /tmp/patch-press-out/Dexed
-  name: Dexed_First
+  name: Dexed_Brass1

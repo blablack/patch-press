@@ -19,7 +19,7 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
 
 | Command | Purpose |
 |---|---|
-| `scan <vst> <config-dir>` | Probe every VST preset, write one YAML per preset |
+| `scan-from-probe <probe-dir> <config-dir>` | Analyse patch-probe YAMLs, write one config per preset |
 | `scan-library <folder> <config-dir>` | Write one YAML per subfolder of a sample library |
 | `sample <config.yaml>` | Run the full pipeline for one config |
 | `batch <configs/*.yaml>` | Run all configs sequentially, skip existing outputs |
@@ -31,6 +31,6 @@ Two profiles exist: `synth` (melodic, full range) and `drums` (multi-velocity, m
 ## Key conventions
 
 - Source type drives behaviour: VST skips pitch verification, library keeps it
-- `scan` probes with middle C (MIDI 60); `--sustain-duration` controls capture length for sustaining sounds (default 4s, use 20s for complex synths like Diva/Zebra2)
+- `scan-from-probe` re-renders each preset at `--probe-note` (default 60) to classify sustain type; `--quality low/medium/high` controls note step and capture duration
 - Library filenames: note+octave parsed anywhere in the stem (`Mini_Patch_A#0_0001.wav` → note A#0, RR 1); base files (no `_NNNN` suffix) ignored when numbered RRs exist for the same note
-- Output is always Deluge format; `output.path` in the config is the directory on the SD card
+- Output is always Deluge format; `output.name` in the config sets the preset name; the SD card output directory is supplied via the CLI `--path` argument

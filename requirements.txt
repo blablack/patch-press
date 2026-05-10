@@ -1,5 +1,4 @@
-pedalboard==0.9.22
-mido==1.3.3
+patch-render==0.2.1
 numpy==2.4.4
 soundfile==0.13.1
 lxml==6.1.0

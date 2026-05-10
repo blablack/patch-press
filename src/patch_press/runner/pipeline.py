@@ -15,7 +15,9 @@ _EXPORTERS = {
 }
 
 
-def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1) -> Path:
+def run(
+    config: RunConfig, output_path: Path, output_format: str, workers: int = 1
+) -> Path:
     if isinstance(config.source, VSTSourceConfig):
         logging.debug(f"{config.source.plugin.name} - {config.source.preset}")
         logging.debug("Capturing")
@@ -28,7 +30,11 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         )
     elif isinstance(config.source, LibrarySourceConfig):
         adapter = LibraryAdapter(config.source)
-        sset = adapter.capture(name=config.name or None, max_round_robins=config.capture.round_robins, note_step=config.capture.note_step)
+        sset = adapter.capture(
+            name=config.name or None,
+            max_round_robins=config.capture.round_robins,
+            note_step=config.capture.note_step,
+        )
         analysis = config.analysis
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")

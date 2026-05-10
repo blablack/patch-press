@@ -27,8 +27,9 @@ def _deluge_path(path: Path) -> str:
 def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int], Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[int, int, int], Path] = {}
+    bpm = int(round(sset.tempo_bpm))
     for s in sset.samples:
-        fname = f"note{s.note:03d}_V{s.velocity:03d}_RR{s.round_robin}.wav"
+        fname = f"note{s.note:03d}_T{bpm:03d}_V{s.velocity:03d}_RR{s.round_robin}.wav"
         p = output_dir / fname
         sf.write(str(p), s.audio.data.T, s.audio.sample_rate)
         paths[(s.note, s.velocity, s.round_robin)] = p

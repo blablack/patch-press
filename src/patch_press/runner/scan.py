@@ -109,8 +109,6 @@ def _parse_probe_yaml(yaml_path: Path) -> tuple[str, VSTSourceConfig]:
         plugin=Path(src["plugin"]),
         preset=src.get("preset"),
         raw_state=src.get("raw_state"),
-        parameter_state=src.get("parameter_state") or {},
-        preset_source=src.get("preset_source"),
     )
     return src["preset"], cfg
 

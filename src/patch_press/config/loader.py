@@ -35,12 +35,7 @@ def load_config(path: Path) -> RunConfig:
         source = VSTSourceConfig(
             plugin=Path(src["plugin"]),
             preset=src.get("preset"),
-            fx_chain=[Path(p) for p in src.get("fx_chain", [])],
-            program_index=src.get("program_index"),
-            preset_file=Path(src["preset_file"]) if src.get("preset_file") else None,
             raw_state=src.get("raw_state"),
-            parameter_state=src.get("parameter_state") or {},
-            preset_source=src.get("preset_source"),
         )
     elif src["type"] == "library":
         source = LibrarySourceConfig(
@@ -58,6 +53,7 @@ def load_config(path: Path) -> RunConfig:
         round_robins=cap.get("round_robins", 1),
         duration_s=cap.get("duration_s", 4.0),
         release_tail_s=cap.get("release_tail_s", 2.0),
+        tempo_bpm=cap.get("tempo_bpm", 120.0),
     )
 
     ana = raw.get("analysis", {})

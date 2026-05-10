@@ -1,26 +1,24 @@
-# Example: sample a single VST preset and export to Deluge
+# VST preset captured by patch-probe.
+# Run with:
+#   patch-press sample diva_warmth.yaml --path /media/DELUGE/SYNTHS/Diva --format deluge
 source:
   type: vst
   plugin: /path/to/Diva.vst3
   preset: "PAD Warmth"
-  # fx_chain:
-  #   - /path/to/TapeEmulation.vst3
+  raw_state: "<base64 state from patch-probe>"
 
 profile: synth
 
-# capture:          # uncomment to override profile defaults
-#   note_range: [24, 96]
-#   note_step: 3
-#   velocities: [100]
-#   duration_s: 8
-#   release_tail_s: 5
+capture:
+  tempo_bpm: 120
+  note_step: 3
+  duration_s: 8.0
+  release_tail_s: 5.0
 
-# analysis:
-#   loop: true
-#   loop_quality_threshold: 0.8
-#   normalize: per_set
+analysis:
+  loop: true
+  loop_quality_threshold: 0.8
+  normalize: per_set
 
 output:
-  format: deluge
-  path: /Volumes/DELUGE/SYNTHS/Diva/Pads
   name: Diva_Warmth

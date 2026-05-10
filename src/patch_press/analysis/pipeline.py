@@ -56,6 +56,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
 
 
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
+    tempo_bpm = config.tempo_bpm or sset.tempo_bpm
     level = logging.getLogger().getEffectiveLevel()
     analyzed: list[Sample] = []
 
@@ -91,6 +92,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
         category=sset.category,
         samples=analyzed,
         source_metadata=sset.source_metadata,
+        tempo_bpm=tempo_bpm,
     )
 
     if config.normalize == "per_sample":
@@ -99,6 +101,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
             category=result.category,
             samples=[normalize_sample(s) for s in result.samples],
             source_metadata=result.source_metadata,
+            tempo_bpm=tempo_bpm,
         )
     elif config.normalize == "per_set":
         result = normalize_set(result)
