@@ -19,8 +19,8 @@ from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 
 _SAMPLE_RATE = 44100
-# Lead-in silence before note-on so plugin state-load side-effects (e.g. Odin2's
-# deferred C3 preview on setStateInformation) fire and decay before our note starts.
+# Lead-in silence before note-on so the sample starts with clean silence rather
+# than a burst onset.
 _INIT_LEAD_S = 0.1
 
 
