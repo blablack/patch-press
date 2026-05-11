@@ -94,7 +94,7 @@ def _write_config(
         f"  loop: {'true' if result.loop else 'false'}\n"
         f"\n"
         f"output:\n"
-        f"  name: {safe_name}\n"
+        f'  name: "{preset_name}"\n'
     )
 
     out = config_dir / f"{safe_name}.yaml"
@@ -280,7 +280,7 @@ def scan_library(
             f"  loop: {'true' if loop else 'false'}\n"
             f"\n"
             f"output:\n"
-            f"  name: {safe_name}\n"
+            f'  name: "{subfolder.name}"\n'
         )
 
         out = config_dir / f"{safe_name}.yaml"
