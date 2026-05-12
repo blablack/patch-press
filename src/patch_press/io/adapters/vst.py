@@ -8,6 +8,7 @@ from pathlib import Path
 
 try:
     import patch_render as _patch_render
+
     _USE_EXTENSION = True
 except ImportError:
     _USE_EXTENSION = False
@@ -18,10 +19,10 @@ from ...config.schema import CaptureConfig, VSTSourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 
-_SAMPLE_RATE = 44100
+_SAMPLE_RATE = 48000
 # Lead-in silence before note-on so the sample starts with clean silence rather
 # than a burst onset.
-_INIT_LEAD_S = 0.1
+_INIT_LEAD_S = 5.0
 
 
 class VSTAdapter:
@@ -35,9 +36,7 @@ class VSTAdapter:
         elif config.raw_state and config.preset:
             self._state_map = {config.preset: config}
         else:
-            raise ValueError(
-                "VSTAdapter requires either state_map or a config with both raw_state and preset"
-            )
+            raise ValueError("VSTAdapter requires either state_map or a config with both raw_state and preset")
         self._config = config
         self._current_raw_state: str = ""
 
@@ -91,9 +90,7 @@ class VSTAdapter:
                     text=True,
                 )
                 if result.returncode != 0:
-                    raise RuntimeError(
-                        f"patch-render failed (exit {result.returncode}): {result.stderr}"
-                    )
+                    raise RuntimeError(f"patch-render failed (exit {result.returncode}): {result.stderr}")
             return AudioBuffer.from_file(output_path)
         finally:
             os.unlink(output_path)

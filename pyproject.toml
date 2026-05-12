@@ -19,3 +19,12 @@ patch-press = "patch_press.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/patch_press"]
+
+[tool.ruff]
+line-length = 128
+
+[tool.ruff.lint]
+extend-ignore = ["E203", "E402"]
+
+[tool.ruff.format]
+# black-compatible formatting is the default

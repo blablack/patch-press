@@ -73,6 +73,25 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
                 pbar.set_postfix(note=sample.note, vel=sample.velocity, rr=sample.round_robin)
                 pbar.update(1)
 
+    if config.loop:
+        samples_with_loop = sum(1 for s in analyzed if s.loop_points is not None)
+        if 0 < samples_with_loop < len(analyzed):
+            log.warning(
+                f"Loop detection inconsistent ({samples_with_loop}/{len(analyzed)} samples) — disabling looping for all."
+            )
+            analyzed = [
+                Sample(
+                    note=s.note,
+                    velocity=s.velocity,
+                    round_robin=s.round_robin,
+                    audio=s.audio,
+                    loop_points=None,
+                    analysis={**s.analysis, "loop_warning": "disabled_for_consistency"},
+                    metadata=s.metadata,
+                )
+                for s in analyzed
+            ]
+
     if sset.category == Category.DRUM and config.classify_drums:
         analyzed = [
             Sample(

@@ -3,7 +3,7 @@ import numpy as np
 from ..model.audio import AudioBuffer
 
 _FRAME = 2048
-_MIN_GAP_S = 0.25
+_MIN_GAP_S = 1.0
 _MAX_GAP_S = 8.0
 _MAX_CANDIDATES = 300
 
@@ -12,6 +12,10 @@ _ENV_MIN_PERIOD_S = 0.25
 _ENV_MAX_PERIOD_S = 8.0
 _REFINE_RADIUS = 256
 _SLOPE_WINDOW = 16
+_ZC_SNAP_RADIUS = 512
+
+# RMS fraction below which we consider the sustain ended (start of release)
+_SUSTAIN_THRESHOLD = 0.4
 
 # Quarter-note multipliers covering common tempo-synced delay/LFO rates
 _TEMPO_SUBDIVISIONS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0]
@@ -21,6 +25,49 @@ def _rms_envelope(mono: np.ndarray, hop: int) -> np.ndarray:
     n_hops = len(mono) // hop
     frames = mono[: n_hops * hop].reshape(n_hops, hop)
     return np.sqrt(np.mean(frames**2, axis=1))
+
+
+def _detect_sustain_region(mono: np.ndarray, sr: int) -> tuple[int, int]:
+    """Return (start_sample, end_sample) covering the estimated sustain plateau."""
+    n = len(mono)
+    env = _rms_envelope(mono, _ENV_HOP)
+
+    if len(env) < 4:
+        return n // 4, 3 * n // 4
+
+    peak_frame = int(np.argmax(env))
+    peak_val = float(env[peak_frame])
+    if peak_val < 1e-6:
+        return n // 4, 3 * n // 4
+
+    region_start = peak_frame * _ENV_HOP
+
+    # Walk forward from the peak to find where RMS drops below threshold
+    threshold = _SUSTAIN_THRESHOLD * peak_val
+    after_peak = env[peak_frame:]
+    drop_frames = np.where(after_peak < threshold)[0]
+    if len(drop_frames) > 0:
+        region_end = min((peak_frame + int(drop_frames[0])) * _ENV_HOP, n)
+    else:
+        region_end = n
+
+    # Require at least 2× minimum loop length; fall back to quarter-points if not
+    if region_end - region_start < int(_MIN_GAP_S * 2 * sr):
+        return n // 4, 3 * n // 4
+
+    return region_start, region_end
+
+
+def _snap_to_zero_crossing(mono: np.ndarray, frame: int) -> int:
+    """Return the sample index of the zero crossing nearest to frame."""
+    lo = max(0, frame - _ZC_SNAP_RADIUS)
+    hi = min(len(mono) - 1, frame + _ZC_SNAP_RADIUS)
+    segment = mono[lo : hi + 1]
+    crossings = np.where(np.diff(np.sign(segment)) != 0)[0]
+    if len(crossings) == 0:
+        return frame
+    nearest = int(crossings[np.argmin(np.abs(crossings - (frame - lo)))])
+    return lo + nearest
 
 
 def _detect_macro_period(mono: np.ndarray, sr: int) -> int | None:
@@ -150,8 +197,7 @@ def find_loop_points(
     sr = buf.sample_rate
     n = len(mono)
 
-    region_start = n // 4
-    region_end = 3 * n // 4
+    region_start, region_end = _detect_sustain_region(mono, sr)
     if region_end - region_start < sr // 4:
         return None
 
@@ -200,4 +246,10 @@ def find_loop_points(
     if best_pair is None or best_quality < quality_threshold:
         return None
 
-    return best_pair, best_quality
+    s, e = best_pair
+    s = _snap_to_zero_crossing(mono, s)
+    e = _snap_to_zero_crossing(mono, e)
+    if s >= e or e - s < int(_MIN_GAP_S * sr):
+        return None
+
+    return (s, e), best_quality

@@ -1,16 +1,12 @@
 {
     "[python]": {
         "editor.formatOnSave": true,
-        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.defaultFormatter": "charliermarsh.ruff",
         "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
         }
     },
-    "flake8.enabled": true,
-    "isort.args": [
-        "--profile",
-        "black"
-    ],
     "python.terminal.activateEnvironment": false,
     "files.exclude": {
         "**/__pycache__": true,
