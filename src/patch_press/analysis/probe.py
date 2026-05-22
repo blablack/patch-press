@@ -9,7 +9,6 @@ from ..model.audio import AudioBuffer
 _HOP = 512
 _SILENCE_DB = -40.0
 _QUIET_DB = -20.0
-_LOOP_THRESHOLD = 0.7
 
 SHORT_HOLD_S = 2.0
 LONG_HOLD_S = 10.0
@@ -51,8 +50,6 @@ def classify_sustain_type(
 class ProbeResult:
     duration_s: float
     release_tail_s: float
-    loop: bool
-    loop_quality: float | None
     sustains: bool
     confidence: str  # "high" | "medium" | "low"
     flags: list[str] = field(default_factory=list)
@@ -76,8 +73,7 @@ def probe(audio: AudioBuffer, note_off_s: float, sustains_hint: bool | None = No
     peak = rms.max()
     if peak < 1e-7:
         return ProbeResult(
-            duration_s=2.0, release_tail_s=0.5, loop=False,
-            loop_quality=None, sustains=False,
+            duration_s=2.0, release_tail_s=0.5, sustains=False,
             confidence="low", flags=["silent signal — check preset"],
         )
 
@@ -115,34 +111,15 @@ def probe(audio: AudioBuffer, note_off_s: float, sustains_hint: bool | None = No
     duration_s = round(duration_s, 1)
     release_tail_s = round(release_tail_s, 1)
 
-    # Loop detection on the hold region (sustaining sounds only)
-    loop = False
-    loop_quality: float | None = None
-    if sustains:
-        from .loop import find_loop_points
-        hold_audio = AudioBuffer(
-            data=audio.data[:, : int(note_off_s * sr)],
-            sample_rate=sr,
-        )
-        found = find_loop_points(hold_audio, _LOOP_THRESHOLD)
-        if found:
-            _, q = found
-            loop_quality = round(float(q), 3)
-            loop = loop_quality >= _LOOP_THRESHOLD
-
     flags: list[str] = []
     if peak < quiet_thr:
         flags.append("quiet signal, check preset level")
-    if loop and loop_quality is not None and loop_quality < 0.8:
-        flags.append(f"borderline loop quality ({loop_quality:.2f})")
 
     confidence = "high" if not flags else ("medium" if len(flags) == 1 else "low")
 
     return ProbeResult(
         duration_s=duration_s,
         release_tail_s=release_tail_s,
-        loop=loop,
-        loop_quality=loop_quality,
         sustains=sustains,
         confidence=confidence,
         flags=flags,

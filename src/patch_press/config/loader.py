@@ -54,6 +54,7 @@ def load_config(path: Path) -> RunConfig:
         duration_s=cap.get("duration_s", 4.0),
         release_tail_s=cap.get("release_tail_s", 2.0),
         tempo_bpm=cap.get("tempo_bpm", 120.0),
+        sample_rate=cap.get("sample_rate", 48000),
     )
 
     ana = raw.get("analysis", {})

@@ -1,0 +1,13 @@
+category: synth
+
+capture:
+  note_range: [21, 108]
+  note_step: 3
+  velocities: [100]
+  round_robins: 1
+  duration_s: 2
+  release_tail_s: 1
+
+analysis:
+  loop: false
+  normalize: per_set

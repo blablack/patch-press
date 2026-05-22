@@ -54,6 +54,7 @@ class VSTAdapter:
         hold_s: float,
         total_s: float,
         tempo_bpm: float = 120.0,
+        sample_rate: int = _SAMPLE_RATE,
     ) -> AudioBuffer:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
@@ -62,7 +63,7 @@ class VSTAdapter:
                 "plugin": str(self._config.plugin),
                 "output": output_path,
                 "duration": total_s + _INIT_LEAD_S,
-                "sample_rate": float(_SAMPLE_RATE),
+                "sample_rate": float(sample_rate),
                 "raw_state": raw_state or "",
                 "bpm": tempo_bpm,
                 "midi": [
@@ -102,8 +103,9 @@ class VSTAdapter:
         hold_s: float,
         total_s: float,
         tempo_bpm: float = 120.0,
+        sample_rate: int = _SAMPLE_RATE,
     ) -> AudioBuffer:
-        return self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm)
+        return self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm, sample_rate)
 
     def probe_preset(
         self,
@@ -139,6 +141,7 @@ class VSTAdapter:
                             capture.duration_s,
                             capture.duration_s + capture.release_tail_s,
                             capture.tempo_bpm,
+                            capture.sample_rate,
                         )
                         samples.append(
                             Sample(

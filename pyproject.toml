@@ -12,6 +12,7 @@ dependencies = [
     "soundfile",
     "lxml",
     "pyyaml",
+    "librosa",
 ]
 
 [project.scripts]

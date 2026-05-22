@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 
+from ..analysis.pipeline import classify_sampleset
 from ..analysis.probe import (
     LONG_HOLD_S,
     SHORT_HOLD_S,
@@ -22,6 +23,7 @@ from ..config.schema import VSTSourceConfig
 from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..model.audio import AudioBuffer
+from ..model.sample import Category, Sample, SampleSet
 
 
 class _QualitySettings(NamedTuple):
@@ -46,6 +48,17 @@ class ScanSummary:
     reviews: list[tuple[str, ProbeResult]] = field(default_factory=list)
 
 
+_CLASSIFY_NOTES = [36, 48, 60, 72, 84]
+
+
+def _sound_type_to_profile(sound_type: str) -> str:
+    if sound_type == "Pluck":
+        return "pluck"
+    if sound_type.startswith("Sustained + rhythm"):
+        return "pad"
+    return "synth"
+
+
 def _sanitize(name: str) -> str:
     s = re.sub(r"[^\w]", "_", name)
     s = re.sub(r"_+", "_", s)
@@ -61,18 +74,18 @@ def _write_config(
     profile: str,
     note_step: int,
     raw_state: str | None = None,
+    sample_rate: int = 48000,
 ) -> Path:
     safe_name = _sanitize(preset_name)
 
     review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
 
     meta = f"confidence={result.confidence}"
-    if result.loop_quality is not None:
-        meta += f" loop_quality={result.loop_quality:.2f}"
     meta += f" sustains={'yes' if result.sustains else 'no'}"
     meta += f" release={result.release_tail_s:.1f}s"
 
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
+    sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
     raw_state_line = f'  raw_state: "{raw_state}"\n' if raw_state else ""
     content = (
         f"{review_line}"
@@ -86,12 +99,10 @@ def _write_config(
         f"profile: {profile}\n"
         f"\n"
         f"capture:\n"
+        f"{sample_rate_line}"
         f"{note_step_line}"
         f"  duration_s: {result.duration_s}\n"
         f"  release_tail_s: {result.release_tail_s}\n"
-        f"\n"
-        f"analysis:\n"
-        f"  loop: {'true' if result.loop else 'false'}\n"
         f"\n"
         f"output:\n"
         f'  name: "{preset_name}"\n'
@@ -116,12 +127,14 @@ def _parse_probe_yaml(yaml_path: Path) -> tuple[str, VSTSourceConfig]:
 def scan_from_probe(
     probe_dir: Path,
     config_dir: Path,
-    profile: str = "synth",
+    profile: str | None = None,
     probe_note: int = 60,
     probe_velocity: int = 100,
     probe_release_s: float = 4.0,
     quality: str = "medium",
     debug: bool = False,
+    sample_rate: int = 48000,
+    tempo_bpm: float = 120.0,
 ) -> ScanSummary:
     q = QUALITY[quality]
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -155,10 +168,10 @@ def scan_from_probe(
     for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
         adapter._apply_preset(preset_name)
         short_audio = adapter.render_note(
-            probe_note, probe_velocity, SHORT_HOLD_S, _total_s
+            probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate
         )
         long_audio = adapter.render_note(
-            probe_note, probe_velocity, LONG_HOLD_S, _total_s
+            probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate
         )
 
         if not _switching_verified:
@@ -183,15 +196,32 @@ def scan_from_probe(
                 release_tail_s=max(result.release_tail_s, q.min_release_s),
             )
 
+        if profile is not None:
+            preset_profile = profile
+        else:
+            classify_samples = [
+                Sample(
+                    note=n,
+                    velocity=probe_velocity,
+                    round_robin=1,
+                    audio=adapter.render_note(n, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate),
+                )
+                for n in _CLASSIFY_NOTES
+            ]
+            classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
+            sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
+            tqdm.write(f"  {preset_name}: {sound_type}")
+            preset_profile = _sound_type_to_profile(sound_type)
         path = _write_config(
             preset_name,
             plugin_path,
             result,
             config_dir,
             plugin_stem,
-            profile,
+            preset_profile,
             q.note_step,
             raw_state=state_map[preset_name].raw_state,
+            sample_rate=sample_rate,
         )
         summary.written.append(path)
         if result.confidence != "high" or result.flags:
@@ -223,30 +253,33 @@ def _find_closest_wavs(wavs: list[Path], targets: list[int]) -> list[Path]:
     return selected
 
 
-def _detect_loop_for_folder(subfolder: Path, library_type: str) -> bool:
+def _detect_folder_profile(subfolder: Path, library_type: str) -> str:
+    """Return profile for the folder using classify on candidate WAVs."""
     if library_type == "kit":
-        return False
+        return "drums"
 
     wavs = sorted(subfolder.glob("*.wav"))
     if not wavs:
-        return False
+        return "synth"
 
     candidates = _find_closest_wavs(wavs, [48, 60, 72]) or wavs[:3]
-    loop_votes = 0
+    samples = []
     for wav in candidates:
         audio = AudioBuffer.from_file(wav)
-        result = probe(audio, audio.duration_s)
-        if result.loop:
-            loop_votes += 1
+        note_info = _parse_note_rr(wav.stem)
+        note = note_info[0] if note_info else 60
+        samples.append(Sample(note=note, velocity=100, round_robin=1, audio=audio))
 
-    return loop_votes > len(candidates) / 2
+    sset = SampleSet(name=subfolder.name, category=Category.SYNTH, samples=samples)
+    sound_type = classify_sampleset(sset, workers=1)
+    return _sound_type_to_profile(sound_type)
 
 
 def scan_library(
     library_path: Path,
     config_dir: Path,
     library_type: str,
-    profile: str = "synth",
+    profile: str | None = None,
     quality: str = "medium",
     debug: bool = False,
 ) -> ScanSummary:
@@ -262,23 +295,21 @@ def scan_library(
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
-        loop = _detect_loop_for_folder(subfolder, library_type)
-        tqdm.write(f"  {subfolder.name} → {'loop' if loop else 'one-shot'}")
+        detected_profile = _detect_folder_profile(subfolder, library_type)
+        folder_profile = profile if profile is not None else detected_profile
+        tqdm.write(f"  {subfolder.name} → {folder_profile}")
         safe_name = _sanitize(subfolder.name)
 
         capture_block = (
-            "" if profile == "drums" else f"\ncapture:\n  note_step: {q.note_step}\n"
+            "" if folder_profile == "drums" else f"\ncapture:\n  note_step: {q.note_step}\n"
         )
         content = (
             f"source:\n"
             f"  type: library\n"
             f"  path: {subfolder}\n"
             f"\n"
-            f"profile: {profile}\n"
+            f"profile: {folder_profile}\n"
             f"{capture_block}\n"
-            f"analysis:\n"
-            f"  loop: {'true' if loop else 'false'}\n"
-            f"\n"
             f"output:\n"
             f'  name: "{subfolder.name}"\n'
         )

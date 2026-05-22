@@ -1,11 +1,24 @@
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
+from tqdm import tqdm
+
+
+class _TqdmLoggingHandler(logging.StreamHandler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            tqdm.write(self.format(record))
+        except Exception:
+            self.handleError(record)
+
+from ..analysis.pipeline import suppress_noisy_loggers
 from ..config.loader import load_config
 from ..profiles import available_profiles
 from ..runner.batch import run_batch
+from ..runner.pipeline import classify as classify_run
 from ..runner.pipeline import run
 from ..runner.scan import QUALITY_CHOICES, scan_from_probe, scan_library
 
@@ -45,6 +58,8 @@ def cmd_scan_from_probe(args: argparse.Namespace) -> None:
         probe_velocity=args.probe_velocity,
         quality=args.quality,
         debug=args.debug,
+        sample_rate=args.sample_rate,
+        tempo_bpm=args.tempo_bpm,
     )
     print(
         f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
@@ -72,6 +87,27 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
     print(
         f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
     )
+
+
+def cmd_classify(args: argparse.Namespace) -> None:
+    configs: list[Path] = []
+    for pattern in args.configs:
+        found = sorted(Path(".").glob(pattern))
+        if not found:
+            found = [Path(pattern)]
+        configs.extend(found)
+
+    if not configs:
+        print("No config files found.", file=sys.stderr)
+        sys.exit(1)
+
+    for cfg_path in tqdm(configs, desc="Classify", unit="preset"):
+        try:
+            config = load_config(cfg_path)
+            sound_type = classify_run(config, workers=args.workers, save_path=args.save_path)
+            tqdm.write(f"{config.output.name:<40} → {sound_type}")
+        except Exception as exc:
+            tqdm.write(f"ERROR  {cfg_path.stem}: {exc}")
 
 
 def cmd_profiles(_args: argparse.Namespace) -> None:
@@ -165,7 +201,27 @@ def main() -> None:
     scan_probe_p.add_argument(
         "config_dir", type=Path, help="Directory to write generated YAML configs"
     )
-    scan_probe_p.add_argument("--profile", choices=["synth", "drums"], default="synth")
+    scan_probe_p.add_argument(
+        "--profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
+    )
+    scan_probe_p.add_argument(
+        "--sample-rate",
+        type=int,
+        default=48000,
+        choices=[44100, 48000, 96000],
+        metavar="HZ",
+        help="Sample rate for VST capture (default: 48000)",
+    )
+    scan_probe_p.add_argument(
+        "--tempo-bpm",
+        type=float,
+        default=120.0,
+        metavar="BPM",
+        help="Tempo for rhythm detection during classify (default: 120)",
+    )
     scan_probe_p.add_argument("--probe-note", type=int, default=60, metavar="MIDI")
     scan_probe_p.add_argument("--probe-velocity", type=int, default=100, metavar="VEL")
     scan_probe_p.add_argument(
@@ -193,12 +249,37 @@ def main() -> None:
             per instrument, one-shot hits)
         """,
     )
-    scan_lib_p.add_argument("--profile", choices=["synth", "drums"], default="synth")
+    scan_lib_p.add_argument(
+        "--profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
+    )
     scan_lib_p.add_argument(
         "--quality",
         choices=QUALITY_CHOICES,
         default="medium",
         help="Sampling quality: controls note step (default: medium)",
+    )
+
+    # patch-press classify configs/*.yaml
+    classify_p = sub.add_parser("classify", help="Print sound type for each preset without exporting")
+    classify_p.add_argument(
+        "configs", nargs="+", metavar="CONFIG", help="Config paths or globs"
+    )
+    classify_p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of parallel analysis workers (default: 1)",
+    )
+    classify_p.add_argument(
+        "--save-path",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Save captured WAVs to PATH/<preset_name>/ for inspection",
     )
 
     # patch-press profiles
@@ -213,7 +294,9 @@ def main() -> None:
             else logging.INFO if args.verbose else logging.WARNING
         ),
         format="%(message)s",
+        handlers=[_TqdmLoggingHandler()],
     )
+    suppress_noisy_loggers()
 
     if args.command == "sample":
         cmd_sample(args)
@@ -223,8 +306,15 @@ def main() -> None:
         cmd_scan_from_probe(args)
     elif args.command == "scan-library":
         cmd_scan_library(args)
+    elif args.command == "classify":
+        cmd_classify(args)
     elif args.command == "profiles":
         cmd_profiles(args)
+
+    # C extensions (JUCE via patch-render, numba/LLVM via librosa) crash during
+    # Python interpreter teardown. For a CLI tool, skipping teardown is safe
+    # because temp files are cleaned up inside finally blocks in VSTAdapter._render().
+    os._exit(0)
 
 
 if __name__ == "__main__":
