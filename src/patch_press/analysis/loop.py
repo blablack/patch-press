@@ -178,7 +178,7 @@ def _boundary_score(
     return 0.6 * chroma + 0.25 * amp_score + 0.15 * slope_score
 
 
-def _validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> str:
+def validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> str:
     """Return empty string if the splice is clean, else a description of the failing check.
 
     end is treated as exclusive: the loop plays [start, end), so the last sample
@@ -367,11 +367,6 @@ def find_loop_points(
     e = _snap_to_slope_zero_crossing(mono, e, rising) + 1
 
     if s >= e or e - s < int(_MIN_GAP_S * sr) or e >= n:
-        return None, best_quality
-
-    fail = _validate_splice_reason(mono, sr, s, e)
-    if fail:
-        log.warning(f"Splice validation failed at ({s}, {e}): {fail} — falling back to loopMode=0")
         return None, best_quality
 
     return (s, e), best_quality

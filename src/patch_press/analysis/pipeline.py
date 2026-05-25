@@ -59,7 +59,7 @@ from ..config.schema import AnalysisConfig
 from ..model.sample import Category, Sample, SampleSet
 from .classify import classify_drum
 from .envelope import analyze_envelope
-from .loop import bake_loop_crossfade, find_loop_points
+from .loop import bake_loop_crossfade, find_loop_points, validate_splice_reason
 from .normalize import normalize_sample, normalize_set
 from .pitch import verify_pitch
 from .trim import trim_silence
@@ -130,10 +130,17 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     if config.loop:
         loop_points_found, quality = find_loop_points(audio, config.loop_quality_threshold, config.tempo_bpm, envelope=env, midi_note=sample.note)
         if loop_points_found is not None:
-            loop_points = loop_points_found
-            analysis["loop_quality"] = round(quality, 3)
+            s, e = loop_points_found
             if config.loop_crossfade_ms > 0:
-                audio = bake_loop_crossfade(audio, loop_points[0], loop_points[1], config.loop_crossfade_ms)
+                audio = bake_loop_crossfade(audio, s, e, config.loop_crossfade_ms)
+            fail = validate_splice_reason(audio.to_mono(), audio.sample_rate, s, e)
+            if fail:
+                log.warning(f"Splice validation failed after crossfade ({s}, {e}): {fail} — dropping loop")
+                analysis["loop_quality"] = round(quality, 3)
+                analysis["loop_warning"] = "splice_failed_after_crossfade"
+            else:
+                loop_points = (s, e)
+                analysis["loop_quality"] = round(quality, 3)
         else:
             analysis["loop_quality"] = round(quality, 3) if quality > 0 else None
             analysis["loop_warning"] = "no_suitable_loop_found"
