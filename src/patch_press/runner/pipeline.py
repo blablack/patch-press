@@ -7,7 +7,8 @@ import soundfile as sf
 from ..analysis.normalize import normalize_sample
 from ..analysis.pipeline import analyze_sampleset, classify_sampleset
 from ..analysis.trim import trim_silence
-from ..config.schema import LibrarySourceConfig, RunConfig, VSTSourceConfig
+from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig
+from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.adapters.vst import VSTAdapter
 from ..io.exporters.deluge import DelugeExporter
@@ -22,8 +23,16 @@ _EXPORTERS = {
 def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1) -> Path:
     if isinstance(config.source, VSTSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
-        # log.debug("Capturing")
         adapter = VSTAdapter(config.source)
+        sset = adapter.capture(config.capture, name=config.name or None)
+        analysis = replace(
+            config.analysis,
+            pitch_verify=False,
+            tempo_bpm=config.analysis.tempo_bpm or config.capture.tempo_bpm,
+        )
+    elif isinstance(config.source, CLAPSourceConfig):
+        log.debug(f"{config.source.plugin.name} - {config.source.preset}")
+        adapter = CLAPAdapter(config.source)
         sset = adapter.capture(config.capture, name=config.name or None)
         analysis = replace(
             config.analysis,
@@ -52,10 +61,9 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
 
 
 def classify(config: RunConfig, workers: int = 1, save_path: Path | None = None) -> str:
-    if isinstance(config.source, VSTSourceConfig):
+    if isinstance(config.source, (VSTSourceConfig, CLAPSourceConfig)):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
-        # log.debug("Capturing")
-        adapter = VSTAdapter(config.source)
+        adapter = VSTAdapter(config.source) if isinstance(config.source, VSTSourceConfig) else CLAPAdapter(config.source)
         sset = adapter.capture(config.capture, name=config.name or None)
         tempo_bpm = config.analysis.tempo_bpm or config.capture.tempo_bpm
     elif isinstance(config.source, LibrarySourceConfig):

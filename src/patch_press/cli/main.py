@@ -20,7 +20,7 @@ from ..profiles import available_profiles
 from ..runner.batch import run_batch
 from ..runner.pipeline import classify as classify_run
 from ..runner.pipeline import run
-from ..runner.scan import QUALITY_CHOICES, scan_from_probe, scan_library
+from ..runner.scan import QUALITY_CHOICES, scan_clap, scan_from_probe, scan_library
 
 
 def cmd_sample(args: argparse.Namespace) -> None:
@@ -72,6 +72,27 @@ def cmd_scan_from_probe(args: argparse.Namespace) -> None:
                 if result.flags
                 else f"confidence={result.confidence}"
             )
+            print(f"  - {name}: {detail}")
+
+
+def cmd_scan_clap(args: argparse.Namespace) -> None:
+    summary = scan_clap(
+        plugin_path=args.plugin,
+        preset_dir=args.preset_dir,
+        config_dir=args.config_dir,
+        profile=args.profile,
+        probe_note=args.probe_note,
+        probe_velocity=args.probe_velocity,
+        quality=args.quality,
+        debug=args.debug,
+        sample_rate=args.sample_rate,
+        tempo_bpm=args.tempo_bpm,
+    )
+    print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
             print(f"  - {name}: {detail}")
 
 
@@ -231,6 +252,48 @@ def main() -> None:
         help="Sampling quality: controls note step and capture duration (default: medium)",
     )
 
+    # patch-press scan-clap Plugin.clap ~/presets/Plugin configs/Plugin
+    scan_clap_p = sub.add_parser(
+        "scan-clap",
+        help="Scan CLAP presets from a .clap-preset directory and generate config files",
+    )
+    scan_clap_p.add_argument("plugin", type=Path, help="Path to the .clap plugin file")
+    scan_clap_p.add_argument(
+        "preset_dir", type=Path, help="Directory containing .clap-preset files"
+    )
+    scan_clap_p.add_argument(
+        "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    scan_clap_p.add_argument(
+        "--profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
+    )
+    scan_clap_p.add_argument(
+        "--sample-rate",
+        type=int,
+        default=48000,
+        choices=[44100, 48000, 96000],
+        metavar="HZ",
+        help="Sample rate for capture (default: 48000)",
+    )
+    scan_clap_p.add_argument(
+        "--tempo-bpm",
+        type=float,
+        default=120.0,
+        metavar="BPM",
+        help="Tempo for rhythm detection during classify (default: 120)",
+    )
+    scan_clap_p.add_argument("--probe-note", type=int, default=60, metavar="MIDI")
+    scan_clap_p.add_argument("--probe-velocity", type=int, default=100, metavar="VEL")
+    scan_clap_p.add_argument(
+        "--quality",
+        choices=QUALITY_CHOICES,
+        default="medium",
+        help="Sampling quality: controls note step and capture duration (default: medium)",
+    )
+
     # patch-press scan-library "Mini From Mars" configs/Mini
     scan_lib_p = sub.add_parser(
         "scan-library", help="Generate config files for a sample library"
@@ -304,6 +367,8 @@ def main() -> None:
         cmd_batch(args)
     elif args.command == "scan-from-probe":
         cmd_scan_from_probe(args)
+    elif args.command == "scan-clap":
+        cmd_scan_clap(args)
     elif args.command == "scan-library":
         cmd_scan_library(args)
     elif args.command == "classify":

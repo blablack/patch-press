@@ -90,30 +90,47 @@ def _snap_to_slope_zero_crossing(mono: np.ndarray, frame: int, rising: bool) -> 
     return lo + nearest
 
 
+def _midi_to_period(sr: int, midi_note: int) -> int:
+    freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
+    return max(1, int(round(sr / freq)))
+
+
 def _detect_waveform_period(
     mono: np.ndarray,
     sr: int,
     region_start: int,
     region_end: int,
+    hint_period: int | None = None,
 ) -> int | None:
-    """Detect fundamental period via waveform autocorrelation on a sustain chunk."""
+    """Detect fundamental period via waveform autocorrelation on a sustain chunk.
+
+    hint_period narrows the search to ±3 semitones around the expected period
+    and is used as a direct fallback if autocorrelation finds no clear peak.
+    """
     chunk_len = min(region_end - region_start, int(0.5 * sr))
     mid = (region_start + region_end) // 2
     chunk = mono[mid - chunk_len // 2 : mid + chunk_len // 2]
     if len(chunk) < 64:
-        return None
+        return hint_period
     chunk = chunk - chunk.mean()
     n = len(chunk)
     fft_c = np.fft.rfft(chunk, n=2 * n)
     autocorr = np.fft.irfft(np.abs(fft_c) ** 2)[:n]
     autocorr /= autocorr[0] + 1e-12
-    min_lag = max(1, int(sr / 4000))
-    max_lag = min(n // 2, int(sr / 20))
+
+    # ±3 semitones ≈ ×0.84 / ×1.19 in period (inverse of frequency)
+    if hint_period is not None:
+        min_lag = max(1, int(hint_period * 0.84))
+        max_lag = min(n // 2, int(hint_period * 1.19))
+    else:
+        min_lag = max(1, int(sr / 4000))
+        max_lag = min(n // 2, int(sr / 20))
+
     if min_lag >= max_lag:
-        return None
+        return hint_period
     search = autocorr[min_lag:max_lag]
     if search.max() < 0.3:
-        return None
+        return hint_period
     return min_lag + int(np.argmax(search))
 
 
@@ -276,6 +293,7 @@ def find_loop_points(
     quality_threshold: float = 0.8,
     tempo_bpm: float | None = None,
     envelope: EnvelopeResult | None = None,
+    midi_note: int | None = None,
 ) -> tuple[tuple[int, int] | None, float]:
     mono = buf.to_mono()
     sr = buf.sample_rate
@@ -297,6 +315,8 @@ def find_loop_points(
 
     t_mod = envelope.modulation_period_samples if envelope is not None else None
 
+    hint_period = _midi_to_period(sr, midi_note) if midi_note is not None else None
+
     # --- Gather candidates from all sources ---
     # (start, end, pre_chroma_score) where pre_chroma_score=0.0 means compute at scoring time
     candidates: list[tuple[int, int, float]] = []
@@ -305,7 +325,8 @@ def find_loop_points(
     candidates.extend(_chroma_grid_candidates(mono, sr, region_start, region_end))
 
     # Waveform period: integer multiples of fundamental — reliable for smooth periodic pads
-    t_wave = _detect_waveform_period(mono, sr, region_start, region_end)
+    # hint_period focuses autocorrelation around the expected pitch; falls back to it if weak
+    t_wave = _detect_waveform_period(mono, sr, region_start, region_end, hint_period)
     if t_wave is not None:
         for s, e in _waveform_period_candidates(sr, t_wave, region_start, region_end):
             candidates.append((s, e, 0.0))
@@ -354,3 +375,22 @@ def find_loop_points(
         return None, best_quality
 
     return (s, e), best_quality
+
+
+def bake_loop_crossfade(
+    buf: AudioBuffer,
+    loop_start: int,
+    loop_end: int,
+    fade_ms: float,
+) -> AudioBuffer:
+    sr = buf.sample_rate
+    fade_len = int(sr * fade_ms / 1000.0)
+    fade_len = min(fade_len, (loop_end - loop_start) // 4)
+    if fade_len < 8:
+        return buf
+    out = AudioBuffer(data=buf.data.copy(), sample_rate=sr)
+    t = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+    tail = buf.data[:, loop_end - fade_len : loop_end]
+    head = buf.data[:, loop_start : loop_start + fade_len]
+    out.data[:, loop_end - fade_len : loop_end] = tail * np.sqrt(1.0 - t) + head * np.sqrt(t)
+    return out

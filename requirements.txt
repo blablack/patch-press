@@ -1,4 +1,4 @@
-patch-render==0.2.2
+patch-render==0.3.0
 numpy==2.4.6
 soundfile==0.13.1
 lxml==6.1.1

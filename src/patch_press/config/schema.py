@@ -11,6 +11,15 @@ class VSTSourceConfig:
 
 
 @dataclass
+class CLAPSourceConfig:
+    plugin: Path
+    plugin_id: str
+    preset: Optional[str] = None
+    preset_path: Optional[Path] = None
+    raw_state: Optional[str] = None
+
+
+@dataclass
 class LibrarySourceConfig:
     path: Path
     filename_pattern: Optional[str] = None
@@ -35,6 +44,7 @@ class AnalysisConfig:
     pitch_tolerance_cents: float = 50.0
     loop: bool = False
     loop_quality_threshold: float = 0.75
+    loop_crossfade_ms: float = 5.0
     tempo_bpm: float | None = None
     normalize: str = "per_set"  # "per_sample" | "per_set" | "none"
     classify_drums: bool = False
@@ -47,7 +57,7 @@ class OutputConfig:
 
 @dataclass
 class RunConfig:
-    source: Union[VSTSourceConfig, LibrarySourceConfig]
+    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig]
     capture: CaptureConfig
     analysis: AnalysisConfig
     output: OutputConfig

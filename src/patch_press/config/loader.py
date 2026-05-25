@@ -6,6 +6,7 @@ from ..profiles import load_profile
 from .schema import (
     AnalysisConfig,
     CaptureConfig,
+    CLAPSourceConfig,
     LibrarySourceConfig,
     OutputConfig,
     RunConfig,
@@ -37,6 +38,14 @@ def load_config(path: Path) -> RunConfig:
             preset=src.get("preset"),
             raw_state=src.get("raw_state"),
         )
+    elif src["type"] == "clap":
+        source = CLAPSourceConfig(
+            plugin=Path(src["plugin"]),
+            plugin_id=src["plugin_id"],
+            preset=src.get("preset"),
+            preset_path=Path(src["preset_path"]) if src.get("preset_path") else None,
+            raw_state=src.get("raw_state"),
+        )
     elif src["type"] == "library":
         source = LibrarySourceConfig(
             path=Path(src["path"]),
@@ -64,6 +73,7 @@ def load_config(path: Path) -> RunConfig:
         pitch_tolerance_cents=ana.get("pitch_tolerance_cents", 50.0),
         loop=ana.get("loop", False),
         loop_quality_threshold=ana.get("loop_quality_threshold", 0.8),
+        loop_crossfade_ms=ana.get("loop_crossfade_ms", 5.0),
         normalize=ana.get("normalize", "per_set"),
         classify_drums=ana.get("classify_drums", False),
     )

@@ -45,6 +45,27 @@
             "justMyCode": true
         },
         {
+            "name": "patch-press: scan-clap Surge XT",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "--debug",
+                "scan-clap",
+                "input/Plugins/Surge XT.clap",
+                "/home/blablack/Surge XT/Basses",
+                "output/Configs/Surge XT",
+                "--quality",
+                "medium"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
             "name": "patch-press: scan library",
             "type": "debugpy",
             "request": "launch",
@@ -63,76 +84,7 @@
             },
             "console": "integratedTerminal",
             "justMyCode": true
-        },
-        {
-            "name": "patch-press: sample Dexed",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "patch_press.cli",
-            "args": [
-                "--debug",
-                "sample",
-                "output/Configs/Dexed/Beatmehrdr.yaml",
-                "--path",
-                "output/Deluge/Dexed",
-                "--format",
-                "deluge",
-                "--workers",
-                "4"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            },
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "patch-press: sample Odin2",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "patch_press.cli",
-            "args": [
-                "--debug",
-                "sample",
-                "output/Configs/Odin2/Sausage_Bassener.yaml",
-                "--path",
-                "output/Deluge/Odin2",
-                "--format",
-                "deluge",
-                "--workers",
-                "4"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            },
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "patch-press: sample Mini From Mars",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "patch_press.cli",
-            "args": [
-                "--debug",
-                "sample",
-                "output/Configs/Mini From Mars/3_Stack_Bass.yaml",
-                "--path",
-                "output/Deluge/Mini From Mars",
-                "--format",
-                "deluge",
-                "--workers",
-                "4"
-            ],
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            },
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
+        },        
         {
             "name": "patch-press: batch Dexed",
             "type": "debugpy",
@@ -154,7 +106,8 @@
                 "PYTHONPATH": "${workspaceFolder}/src"
             },
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "subProcess": false
         },
         {
             "name": "patch-press: batch Odin2",
@@ -177,7 +130,32 @@
                 "PYTHONPATH": "${workspaceFolder}/src"
             },
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "subProcess": false
+        },
+        {
+            "name": "patch-press: batch Surge XT",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "patch_press.cli",
+            "args": [
+                "--debug",
+                "batch",
+                "output/Configs/Surge XT/*.yaml",
+                "--path",
+                "output/Deluge/Surge XT",
+                "--format",
+                "deluge",
+                "--workers",
+                "4"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "subProcess": false
         },
         {
             "name": "patch-press: batch Mini From Mars",
@@ -200,7 +178,8 @@
                 "PYTHONPATH": "${workspaceFolder}/src"
             },
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "subProcess": false
         }
     ]
 }

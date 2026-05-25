@@ -19,7 +19,8 @@ from ..analysis.probe import (
     classify_sustain_type,
     probe,
 )
-from ..config.schema import VSTSourceConfig
+from ..config.schema import CLAPSourceConfig, VSTSourceConfig
+from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..model.audio import AudioBuffer
@@ -155,7 +156,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:10]
+        presets = presets[:20]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -167,12 +168,8 @@ def scan_from_probe(
 
     for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
         adapter._apply_preset(preset_name)
-        short_audio = adapter.render_note(
-            probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate
-        )
-        long_audio = adapter.render_note(
-            probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate
-        )
+        short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
+        long_audio = adapter.render_note(probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate)
 
         if not _switching_verified:
             if _prev_audio is None:
@@ -221,6 +218,166 @@ def scan_from_probe(
             preset_profile,
             q.note_step,
             raw_state=state_map[preset_name].raw_state,
+            sample_rate=sample_rate,
+        )
+        summary.written.append(path)
+        if result.confidence != "high" or result.flags:
+            summary.reviews.append((preset_name, result))
+
+    return summary
+
+
+def _write_clap_config(
+    preset_name: str,
+    plugin_path: Path,
+    plugin_id: str,
+    preset_path: Path,
+    result: ProbeResult,
+    config_dir: Path,
+    profile: str,
+    note_step: int,
+    sample_rate: int = 48000,
+) -> Path:
+    safe_name = _sanitize(preset_name)
+    review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
+    meta = f"confidence={result.confidence}"
+    meta += f" sustains={'yes' if result.sustains else 'no'}"
+    meta += f" release={result.release_tail_s:.1f}s"
+    note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
+    sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
+    content = (
+        f"{review_line}"
+        f"# {meta}\n"
+        f"source:\n"
+        f"  type: clap\n"
+        f"  plugin: {plugin_path}\n"
+        f"  plugin_id: {plugin_id}\n"
+        f'  preset: "{preset_name}"\n'
+        f"  preset_path: {preset_path}\n"
+        f"\n"
+        f"profile: {profile}\n"
+        f"\n"
+        f"capture:\n"
+        f"{sample_rate_line}"
+        f"{note_step_line}"
+        f"  duration_s: {result.duration_s}\n"
+        f"  release_tail_s: {result.release_tail_s}\n"
+        f"\n"
+        f"output:\n"
+        f'  name: "{preset_name}"\n'
+    )
+    out = config_dir / f"{safe_name}.yaml"
+    out.write_text(content)
+    return out
+
+
+def scan_clap(
+    plugin_path: Path,
+    preset_dir: Path,
+    config_dir: Path,
+    profile: str | None = None,
+    probe_note: int = 60,
+    probe_velocity: int = 100,
+    probe_release_s: float = 4.0,
+    quality: str = "medium",
+    debug: bool = False,
+    sample_rate: int = 48000,
+    tempo_bpm: float = 120.0,
+) -> ScanSummary:
+    """Scan CLAP presets from a directory of .clap-preset files.
+
+    Discovers the plugin_id automatically via patch_render.list_clap_plugins(),
+    then probes each .clap-preset file to generate config YAMLs.
+    """
+    try:
+        import patch_render as _pr
+    except ImportError:
+        raise RuntimeError("patch_render extension required for CLAP scanning")
+
+    q = QUALITY[quality]
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Discover plugin ID from the .clap file
+    plugins = _pr.list_clap_plugins(str(plugin_path))
+    if not plugins:
+        raise RuntimeError(f"No plugins found in: {plugin_path}")
+    if len(plugins) > 1:
+        ids = ", ".join(p["id"] for p in plugins)
+        tqdm.write(f"Multiple plugins in {plugin_path.name}: {ids}")
+        tqdm.write(f"  Using first: {plugins[0]['id']}")
+    plugin_id = plugins[0]["id"]
+    tqdm.write(f"Plugin: {plugins[0]['name']} ({plugin_id})")
+
+    # Collect preset files (.clap-preset preferred, fall back to .fxp)
+    preset_files = sorted(preset_dir.glob("*.clap-preset"))
+    if not preset_files:
+        preset_files = sorted(preset_dir.glob("*.fxp"))
+    if not preset_files:
+        raise RuntimeError(f"No .clap-preset or .fxp files found in: {preset_dir}")
+
+    if debug:
+        preset_files = preset_files[:20]
+
+    state_map: dict[str, CLAPSourceConfig] = {}
+    for pf in preset_files:
+        preset_name = pf.stem
+        state_map[preset_name] = CLAPSourceConfig(
+            plugin=plugin_path,
+            plugin_id=plugin_id,
+            preset=preset_name,
+            preset_path=pf,
+        )
+
+    tqdm.write(f"Found {len(state_map)} preset(s) in {preset_dir}")
+    adapter = CLAPAdapter(
+        CLAPSourceConfig(plugin=plugin_path, plugin_id=plugin_id, preset=next(iter(state_map))),
+        state_map=state_map,
+    )
+
+    summary = ScanSummary(total=len(state_map))
+    plugin_stem = plugin_path.stem
+    _total_s = LONG_HOLD_S + probe_release_s
+
+    for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
+        adapter._apply_preset(preset_name)
+        short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
+        long_audio = adapter.render_note(probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate)
+
+        sustains = classify_sustain_type(short_audio, long_audio)
+        result = probe(long_audio, LONG_HOLD_S, sustains_hint=sustains)
+        if result.sustains:
+            result = replace(
+                result,
+                duration_s=q.sustain_duration_s,
+                release_tail_s=max(result.release_tail_s, q.min_release_s),
+            )
+
+        if profile is not None:
+            preset_profile = profile
+        else:
+            classify_samples = [
+                Sample(
+                    note=n,
+                    velocity=probe_velocity,
+                    round_robin=1,
+                    audio=adapter.render_note(n, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate),
+                )
+                for n in _CLASSIFY_NOTES
+            ]
+            classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
+            sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
+            tqdm.write(f"  {preset_name}: {sound_type}")
+            preset_profile = _sound_type_to_profile(sound_type)
+
+        path = _write_clap_config(
+            preset_name,
+            plugin_path,
+            plugin_id,
+            state_map[preset_name].preset_path,
+            result,
+            config_dir,
+            preset_profile,
+            q.note_step,
             sample_rate=sample_rate,
         )
         summary.written.append(path)
@@ -287,11 +444,9 @@ def scan_library(
     config_dir.mkdir(parents=True, exist_ok=True)
     library_stem = _sanitize(library_path.name)
 
-    subfolders = sorted(
-        p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith(".")
-    )
+    subfolders = sorted(p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith("."))
     if debug:
-        subfolders = subfolders[:10]
+        subfolders = subfolders[:20]
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
@@ -300,9 +455,7 @@ def scan_library(
         tqdm.write(f"  {subfolder.name} → {folder_profile}")
         safe_name = _sanitize(subfolder.name)
 
-        capture_block = (
-            "" if folder_profile == "drums" else f"\ncapture:\n  note_step: {q.note_step}\n"
-        )
+        capture_block = "" if folder_profile == "drums" else f"\ncapture:\n  note_step: {q.note_step}\n"
         content = (
             f"source:\n"
             f"  type: library\n"
