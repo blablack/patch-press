@@ -150,11 +150,12 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
 
 
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
-    tempo_bpm = config.tempo_bpm or sset.tempo_bpm
+    actual_tempo = config.tempo_bpm or sset.tempo_bpm
+    loop_tempo = actual_tempo if config.loop_use_tempo else None
     level = logging.getLogger().getEffectiveLevel()
     analyzed: list[Sample] = []
 
-    fn = partial(_analyze_one, config=dataclasses.replace(config, tempo_bpm=tempo_bpm))
+    fn = partial(_analyze_one, config=dataclasses.replace(config, tempo_bpm=loop_tempo))
     with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
         futures = {executor.submit(fn, s): s for s in sset.samples}
         with tqdm(total=len(sset.samples), desc="Analyzing", unit="sample", leave=False) as pbar:
@@ -167,7 +168,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
                 pbar.set_postfix(note=sample.note, vel=sample.velocity, rr=sample.round_robin)
                 pbar.update(1)
 
-    sound_type = _sound_type_string(analyzed, tempo_bpm)
+    sound_type = _sound_type_string(analyzed, actual_tempo)
     log.info(f"Sound type: {sound_type}")
 
     if sound_type == "Pluck":
@@ -220,7 +221,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
         category=sset.category,
         samples=analyzed,
         source_metadata=sset.source_metadata,
-        tempo_bpm=tempo_bpm,
+        tempo_bpm=actual_tempo,
     )
 
     if config.normalize == "per_sample":
@@ -229,7 +230,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
             category=result.category,
             samples=[normalize_sample(s) for s in result.samples],
             source_metadata=result.source_metadata,
-            tempo_bpm=tempo_bpm,
+            tempo_bpm=actual_tempo,
         )
     elif config.normalize == "per_set":
         result = normalize_set(result)

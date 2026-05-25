@@ -72,6 +72,7 @@ def load_config(path: Path) -> RunConfig:
         pitch_verify=ana.get("pitch_verify", True),
         pitch_tolerance_cents=ana.get("pitch_tolerance_cents", 50.0),
         loop=ana.get("loop", False),
+        loop_use_tempo=ana.get("loop_use_tempo", False),
         loop_quality_threshold=ana.get("loop_quality_threshold", 0.8),
         loop_crossfade_ms=ana.get("loop_crossfade_ms", 5.0),
         normalize=ana.get("normalize", "per_set"),

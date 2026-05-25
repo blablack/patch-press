@@ -10,5 +10,6 @@ capture:
 
 analysis:
   loop: true
+  loop_use_tempo: true
   loop_quality_threshold: 0.8
   normalize: per_set

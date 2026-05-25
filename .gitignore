@@ -1,4 +1,6 @@
 # files
+debug_script.sh
+debug_run.log
 
 # folders
 __pycache__

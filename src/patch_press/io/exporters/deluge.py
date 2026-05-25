@@ -106,7 +106,8 @@ class DelugeExporter:
         )
         osc1 = etree.SubElement(
             sound, "osc1",
-            type="sample", loopMode="0", reversed="0",
+            type="sample", pitchSpeed="independent",
+            loopMode="0", reversed="0",
             timeStretchEnable="0", timeStretchAmount="0",
         )
         sample_ranges = etree.SubElement(osc1, "sampleRanges")

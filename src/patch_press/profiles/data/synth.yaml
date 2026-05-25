@@ -9,5 +9,6 @@ capture:
   release_tail_s: 2
 
 analysis:
-  loop: false
+  loop: true
+  loop_use_tempo: false
   normalize: per_set

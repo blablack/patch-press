@@ -156,7 +156,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:20]
+        presets = presets[:10]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -316,7 +316,9 @@ def scan_clap(
         raise RuntimeError(f"No .clap-preset or .fxp files found in: {preset_dir}")
 
     if debug:
-        preset_files = preset_files[:20]
+        import random
+        rng = random.Random(42)
+        preset_files = rng.sample(preset_files, min(10, len(preset_files)))
 
     state_map: dict[str, CLAPSourceConfig] = {}
     for pf in preset_files:
@@ -446,7 +448,7 @@ def scan_library(
 
     subfolders = sorted(p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith("."))
     if debug:
-        subfolders = subfolders[:20]
+        subfolders = subfolders[:10]
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):

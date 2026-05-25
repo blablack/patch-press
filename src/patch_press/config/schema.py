@@ -43,6 +43,7 @@ class AnalysisConfig:
     pitch_verify: bool = True
     pitch_tolerance_cents: float = 50.0
     loop: bool = False
+    loop_use_tempo: bool = False
     loop_quality_threshold: float = 0.75
     loop_crossfade_ms: float = 5.0
     tempo_bpm: float | None = None
