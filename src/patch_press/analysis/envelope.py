@@ -182,7 +182,7 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
         # Use full audio from sustain_start to end — longer window gives more pattern repetitions,
         # which is critical for slow gating patterns (whole-note arpeggiator etc.)
         period_samples = _detect_modulation_period(rms, sr, sustain_start_frame, len(rms))
-        log.debug(f"  autocorr period={period_samples and round(period_samples / sr, 3)}s")
+        log.debug(f"  autocorr period={f'{round(period_samples / sr, 3)}s' if period_samples is not None else 'None'}")
     else:
         period_samples = None
 

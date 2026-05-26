@@ -288,22 +288,26 @@ def _waveform_period_candidates(
     return pairs
 
 
-def find_loop_points(
+def find_loop_candidates(
     buf: AudioBuffer,
     quality_threshold: float = 0.8,
     tempo_bpm: float | None = None,
     envelope: EnvelopeResult | None = None,
     midi_note: int | None = None,
-) -> tuple[tuple[int, int] | None, float]:
+    max_candidates: int = 5,
+) -> list[tuple[tuple[int, int], float]]:
+    """Return up to max_candidates loop points sorted best-first, all above quality_threshold.
+
+    Each entry is ((loop_start, loop_end), quality_score). The caller should try each
+    in order, applying crossfade and splice validation, and use the first that passes.
+    """
     mono = buf.to_mono()
     sr = buf.sample_rate
     n = len(mono)
 
-    # Pluck sounds don't loop
     if envelope is not None and envelope.classification == "pluck":
-        return None, 0.0
+        return []
 
-    # Use envelope's sustain region if available, else detect it
     if envelope is not None:
         region_start = envelope.sustain_start
         region_end = envelope.sustain_end
@@ -311,65 +315,77 @@ def find_loop_points(
         region_start, region_end = _detect_sustain_region(mono, sr)
 
     if region_end - region_start < sr // 4:
-        return None, 0.0
+        return []
 
     t_mod = envelope.modulation_period_samples if envelope is not None else None
-
     hint_period = _midi_to_period(sr, midi_note) if midi_note is not None else None
 
-    # --- Gather candidates from all sources ---
-    # (start, end, pre_chroma_score) where pre_chroma_score=0.0 means compute at scoring time
-    candidates: list[tuple[int, int, float]] = []
+    # Gather candidates from all sources
+    raw: list[tuple[int, int, float]] = []
+    raw.extend(_chroma_grid_candidates(mono, sr, region_start, region_end))
 
-    # Chroma grid: finds loop points for complex pads with no simple waveform period
-    candidates.extend(_chroma_grid_candidates(mono, sr, region_start, region_end))
-
-    # Waveform period: integer multiples of fundamental — reliable for smooth periodic pads
-    # hint_period focuses autocorrelation around the expected pitch; falls back to it if weak
     t_wave = _detect_waveform_period(mono, sr, region_start, region_end, hint_period)
     if t_wave is not None:
         for s, e in _waveform_period_candidates(sr, t_wave, region_start, region_end):
-            candidates.append((s, e, 0.0))
+            raw.append((s, e, 0.0))
 
-    # Tempo subdivisions: for BPM-synced modulation (LFO delays, arps)
     if tempo_bpm is not None:
         for s, e in _tempo_candidates(sr, tempo_bpm, region_start, region_end):
-            candidates.append((s, e, 0.0))
+            raw.append((s, e, 0.0))
 
-    # Constrain loop lengths to integer multiples of the modulation period
-    if t_mod and candidates:
-        candidates = [
-            (s, e, sc) for s, e, sc in candidates
-            if (e - s) % t_mod < t_mod * 0.1
-        ]
+    # Constrain to modulation period multiples; fall back to unconstrained if it wipes all
+    if t_mod and raw:
+        constrained = [(s, e, sc) for s, e, sc in raw if (e - s) % t_mod < t_mod * 0.1]
+        candidates = constrained if constrained else raw
+    else:
+        candidates = raw
 
     # Score all candidates; chroma grid entries reuse their pre-computed similarity
-    best_quality = 0.0
-    best_pair: tuple[int, int] | None = None
+    scored: list[tuple[float, int, int]] = []
     for s, e, pre_score in candidates:
         if s < 0 or e >= n - _FRAME:
             continue
         score = _boundary_score(mono, sr, s, e, pre_chroma_score=pre_score)
-        if score > best_quality:
-            best_quality = score
-            best_pair = (s, e)
+        if score >= quality_threshold:
+            scored.append((score, s, e))
 
-    if best_pair is None or best_quality < quality_threshold:
-        return None, best_quality
+    scored.sort(reverse=True)
 
-    # Zero-crossing snap: for start, land ON the crossing (mono[s] ≈ 0).
-    # For end, land ONE PAST the crossing (end = Z+1) so the last played
-    # sample is mono[end-1] = mono[Z], which is at the crossing (≈ 0).
-    # This ensures both edges of the splice are at small amplitude values.
-    s, e = best_pair
-    rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
-    s = _snap_to_slope_zero_crossing(mono, s, rising)
-    e = _snap_to_slope_zero_crossing(mono, e, rising) + 1
+    # Zero-crossing snap; deduplicate snapped positions
+    result: list[tuple[tuple[int, int], float]] = []
+    seen: set[tuple[int, int]] = set()
+    for score, s, e in scored:
+        rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
+        s_snap = _snap_to_slope_zero_crossing(mono, s, rising)
+        e_snap = _snap_to_slope_zero_crossing(mono, e, rising) + 1
+        if s_snap >= e_snap or e_snap - s_snap < int(_MIN_GAP_S * sr) or e_snap >= n:
+            continue
+        key = (s_snap, e_snap)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(((s_snap, e_snap), score))
+        if len(result) >= max_candidates:
+            break
 
-    if s >= e or e - s < int(_MIN_GAP_S * sr) or e >= n:
-        return None, best_quality
+    return result
 
-    return (s, e), best_quality
+
+def find_loop_points(
+    buf: AudioBuffer,
+    quality_threshold: float = 0.8,
+    tempo_bpm: float | None = None,
+    envelope: EnvelopeResult | None = None,
+    midi_note: int | None = None,
+) -> tuple[tuple[int, int] | None, float]:
+    """Return the single best loop point and its quality score.
+
+    Thin wrapper around find_loop_candidates for callers that don't need fallback iteration.
+    """
+    cands = find_loop_candidates(buf, quality_threshold, tempo_bpm, envelope, midi_note, max_candidates=1)
+    if cands:
+        return cands[0][0], cands[0][1]
+    return None, 0.0
 
 
 def bake_loop_crossfade(
