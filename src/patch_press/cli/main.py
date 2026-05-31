@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
 from tqdm import tqdm
 
 
@@ -37,6 +38,16 @@ def cmd_batch(args: argparse.Namespace) -> None:
             # treat as literal path
             found = [Path(pattern)]
         configs.extend(found)
+
+    if args.only_profile:
+        def _profile(p: Path) -> str | None:
+            try:
+                return yaml.safe_load(p.read_text()).get("profile")
+            except Exception:
+                return None
+        before = len(configs)
+        configs = [p for p in configs if _profile(p) == args.only_profile]
+        print(f"Profile filter '{args.only_profile}': {len(configs)}/{before} configs kept.")
 
     if not configs:
         print("No config files found.", file=sys.stderr)
@@ -209,6 +220,14 @@ def main() -> None:
         "--no-skip",
         action="store_true",
         help="Re-run even if output already exists",
+    )
+    batch_p.add_argument(
+        "--only-profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        metavar="PROFILE",
+        dest="only_profile",
+        help="Debug: only process configs matching this profile (e.g. synth, pad)",
     )
 
     # patch-press scan-from-probe ~/patch-probe/MyPlugin configs/MyPlugin

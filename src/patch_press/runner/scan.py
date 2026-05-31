@@ -195,6 +195,10 @@ def scan_from_probe(
 
         if profile is not None:
             preset_profile = profile
+        elif not sustains:
+            # Sound decays while held → pluck; no need to run classify_sampleset
+            tqdm.write(f"  {preset_name}: Pluck (decay-while-held)")
+            preset_profile = "pluck"
         else:
             classify_samples = [
                 Sample(
@@ -356,6 +360,9 @@ def scan_clap(
 
         if profile is not None:
             preset_profile = profile
+        elif not sustains:
+            tqdm.write(f"  {preset_name}: Pluck (decay-while-held)")
+            preset_profile = "pluck"
         else:
             classify_samples = [
                 Sample(

@@ -13,6 +13,9 @@ _QUIET_DB = -20.0
 SHORT_HOLD_S = 2.0
 LONG_HOLD_S = 10.0
 _SUSTAIN_RATIO_THRESHOLD = 5.0
+# If the late-hold RMS (last 20% of hold) is below this fraction of the hold peak,
+# the sound is decaying while held (pluck-like FM/synth envelope) → not a sustainer.
+_HOLD_LATE_RATIO = 0.10  # -20 dB
 
 
 def classify_sustain_type(
@@ -30,6 +33,12 @@ def classify_sustain_type(
     release, so any remaining energy there would be artifact/noise. The long render
     is right at note release. A sustained instrument has energy in long but not short;
     a pluck is silent in both because it decayed naturally regardless of note_off.
+
+    Secondary check: even if the ratio passes, inspect the hold envelope in long_buf.
+    Some FM/synth presets have envelopes that sustain the key-held note long enough to
+    fool the ratio test, but the sound decays significantly during the hold (pluck-like).
+    If the late-hold RMS is below _HOLD_LATE_RATIO of the hold peak, treat as not
+    sustaining so the capture duration reflects the actual decay.
     """
     sr = long_buf.sample_rate
     start = int(note_off_s * sr)
@@ -43,7 +52,26 @@ def classify_sustain_type(
 
     rms_short = _window_rms(short_buf)
     rms_long = _window_rms(long_buf)
-    return (rms_long / (rms_short + 1e-9)) > _SUSTAIN_RATIO_THRESHOLD
+    if (rms_long / (rms_short + 1e-9)) <= _SUSTAIN_RATIO_THRESHOLD:
+        return False
+
+    # Secondary check: is the sound decaying substantially during the hold?
+    mono = long_buf.data.mean(axis=0)
+    hold_samples = mono[:start]
+    if len(hold_samples) >= _HOP:
+        n = len(hold_samples) // _HOP
+        hold_rms = np.array([
+            float(np.sqrt(np.mean(hold_samples[i * _HOP: (i + 1) * _HOP] ** 2)))
+            for i in range(n)
+        ])
+        peak = hold_rms.max()
+        if peak > 1e-7:
+            late_start = max(0, int(n * 0.8))
+            late_mean = hold_rms[late_start:].mean()
+            if (late_mean / peak) < _HOLD_LATE_RATIO:
+                return False
+
+    return True
 
 
 @dataclass
