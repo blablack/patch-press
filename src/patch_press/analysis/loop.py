@@ -71,14 +71,18 @@ def _detect_sustain_region(mono: np.ndarray, sr: int) -> tuple[int, int]:
     return region_start, region_end
 
 
-def _snap_to_slope_zero_crossing(mono: np.ndarray, frame: int, rising: bool) -> int:
+def _snap_to_slope_zero_crossing(
+    mono: np.ndarray, frame: int, rising: bool, radius: int = _ZC_SNAP_RADIUS
+) -> int:
     """Return nearest zero crossing to frame that matches the requested slope direction.
 
     Returns Z such that the sign change is between mono[Z] and mono[Z+1].
     mono[Z] is the last sample on one side of the crossing (small value, near zero).
+    radius should be at least half the fundamental period so bass notes can always
+    find a matching zero crossing.
     """
-    lo = max(1, frame - _ZC_SNAP_RADIUS)
-    hi = min(len(mono) - 2, frame + _ZC_SNAP_RADIUS)
+    lo = max(1, frame - radius)
+    hi = min(len(mono) - 2, frame + radius)
     segment = mono[lo : hi + 1]
     diffs = np.diff(np.sign(segment))
     crossings = np.where(diffs > 0)[0] if rising else np.where(diffs < 0)[0]
@@ -159,17 +163,22 @@ def _boundary_score(
     end: int,
     pre_chroma_score: float = 0.0,
 ) -> float:
-    """Combined score: chroma + amplitude match + slope match."""
+    """Combined score: chroma + amplitude match + slope match.
+
+    end is exclusive (loop plays [start, end)), so the seam is mono[end-1] → mono[start].
+    Both amplitude and slope are evaluated at the actual seam samples, matching
+    validate_splice_reason.
+    """
     n = len(mono)
 
     xs = float(mono[start])
-    xe = float(mono[end])
+    xe = float(mono[end - 1])   # last sample before the jump, not first after
     max_amp = max(abs(xs), abs(xe), 1e-9)
     amp_score = 1.0 - min(abs(xs - xe) / max_amp, 1.0)
 
     w = _SLOPE_WINDOW
-    s_start = float(mono[min(start + w, n - 1)] - mono[max(start - w, 0)])
-    s_end = float(mono[min(end + w, n - 1)] - mono[max(end - w, 0)])
+    s_start = float(mono[min(start + w, n - 1)]) - float(mono[start])
+    s_end = float(mono[end - 1]) - float(mono[max(end - 1 - w, 0)])
     max_slope = max(abs(s_start), abs(s_end), 1e-9)
     slope_score = 1.0 - min(abs(s_start - s_end) / max_slope, 1.0)
 
@@ -262,15 +271,48 @@ def _tempo_candidates(
     return pairs
 
 
+def _refine_period_candidate(
+    mono: np.ndarray, start: int, loop_len: int, half_period: int, window: int = 64
+) -> tuple[int, int]:
+    """Slide ±half_period around start to find the sub-period offset with lowest splice SSD.
+
+    Compares context-after-start to context-before-end: both should look identical for
+    a perfectly period-aligned loop. Returns (best_start, best_start + loop_len).
+    """
+    window = min(window, loop_len // 4)
+    if window < 4:
+        return start, start + loop_len
+    lo = max(window, start - half_period)
+    hi = min(len(mono) - loop_len - window, start + half_period)
+    if lo >= hi:
+        return start, start + loop_len
+
+    starts = np.arange(lo, hi + 1)
+    w = np.arange(window)
+    # context just after start: mono[s : s+window]
+    s_idx = starts[:, None] + w[None, :]
+    # context just before end: mono[s+loop_len-window : s+loop_len]
+    e_idx = (starts + loop_len - window)[:, None] + w[None, :]
+
+    if s_idx.max() >= len(mono) or e_idx.max() >= len(mono) or e_idx.min() < 0:
+        return start, start + loop_len
+
+    ssds = np.sum((mono[s_idx] - mono[e_idx]) ** 2, axis=1)
+    best_s = int(starts[np.argmin(ssds)])
+    return best_s, best_s + loop_len
+
+
 def _waveform_period_candidates(
     sr: int,
     t_period: int,
     region_start: int,
     region_end: int,
 ) -> list[tuple[int, int]]:
-    min_gap = int(_MIN_GAP_S * sr)
+    # Period-based floor: 50 ms or 4 periods, whichever is larger.
+    # Avoids forcing high-pitched notes into 1s loops where drift accumulates.
+    min_gap = max(int(0.05 * sr), 4 * t_period)
     max_gap = int(_MAX_GAP_S * sr)
-    target_secs = [1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+    target_secs = [0.05, 0.1, 0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
     seen: set[int] = set()
     pairs: list[tuple[int, int]] = []
     for d in target_secs:
@@ -327,7 +369,8 @@ def find_loop_candidates(
     t_wave = _detect_waveform_period(mono, sr, region_start, region_end, hint_period)
     if t_wave is not None:
         for s, e in _waveform_period_candidates(sr, t_wave, region_start, region_end):
-            raw.append((s, e, 0.0))
+            s_r, e_r = _refine_period_candidate(mono, s, e - s, t_wave // 2)
+            raw.append((s_r, e_r, 0.0))
 
     if tempo_bpm is not None:
         for s, e in _tempo_candidates(sr, tempo_bpm, region_start, region_end):
@@ -340,35 +383,39 @@ def find_loop_candidates(
     else:
         candidates = raw
 
-    # Score all candidates; chroma grid entries reuse their pre-computed similarity
-    scored: list[tuple[float, int, int]] = []
-    for s, e, pre_score in candidates:
+    # Zero-crossing snap radius: at least half the fundamental period so that
+    # bass notes (long period, widely-spaced zero crossings) always find a match.
+    zc_radius = max(_ZC_SNAP_RADIUS, (t_wave // 2) if t_wave else 0)
+
+    # Minimum loop after snapping: period-aware floor so short pitch-locked loops
+    # (e.g. 50 ms at A5) are not discarded by the 1s _MIN_GAP_S floor.
+    min_loop = max(int(0.05 * sr), (4 * t_wave) if t_wave else int(_MIN_GAP_S * sr))
+
+    # Pass 1: snap all candidates to same-direction zero crossings, deduplicate.
+    seen_snap: set[tuple[int, int]] = set()
+    snap_pool: list[tuple[int, int]] = []
+    for s, e, _ in candidates:
         if s < 0 or e >= n - _FRAME:
             continue
-        score = _boundary_score(mono, sr, s, e, pre_chroma_score=pre_score)
+        rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
+        s_snap = _snap_to_slope_zero_crossing(mono, s, rising, zc_radius)
+        e_snap = _snap_to_slope_zero_crossing(mono, e, rising, zc_radius) + 1
+        if s_snap >= e_snap or e_snap - s_snap < min_loop or e_snap >= n:
+            continue
+        key = (s_snap, e_snap)
+        if key not in seen_snap:
+            seen_snap.add(key)
+            snap_pool.append((s_snap, e_snap))
+
+    # Pass 2: score at the snapped endpoints so the score reflects the actual seam.
+    scored: list[tuple[float, int, int]] = []
+    for s, e in snap_pool:
+        score = _boundary_score(mono, sr, s, e)
         if score >= quality_threshold:
             scored.append((score, s, e))
 
     scored.sort(reverse=True)
-
-    # Zero-crossing snap; deduplicate snapped positions
-    result: list[tuple[tuple[int, int], float]] = []
-    seen: set[tuple[int, int]] = set()
-    for score, s, e in scored:
-        rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
-        s_snap = _snap_to_slope_zero_crossing(mono, s, rising)
-        e_snap = _snap_to_slope_zero_crossing(mono, e, rising) + 1
-        if s_snap >= e_snap or e_snap - s_snap < int(_MIN_GAP_S * sr) or e_snap >= n:
-            continue
-        key = (s_snap, e_snap)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(((s_snap, e_snap), score))
-        if len(result) >= max_candidates:
-            break
-
-    return result
+    return [((s, e), sc) for sc, s, e in scored[:max_candidates]]
 
 
 def find_loop_points(
@@ -392,16 +439,57 @@ def bake_loop_crossfade(
     buf: AudioBuffer,
     loop_start: int,
     loop_end: int,
-    fade_ms: float,
+    loop_fade_ms: float,
+    release_fade_ms: float | None = None,
 ) -> AudioBuffer:
+    """Bake a backward crossfade at loop_end and a release crossfade just after it.
+
+    The Deluge hard-loop seam is loop_end-1 → loop_start on every wrap. For seamless
+    continuity we need both value and slope to match at that boundary.
+
+    Loop crossfade — region [LE-N, LE):
+      Blend from the existing loop tail (fade out) to a copy of the region just before
+      loop_start (fade in). At t=1 the output sample equals audio[LS-1], so the wrap
+      LE-1 → LS lands on naturally consecutive samples.
+
+    Release crossfade — region [LE, LE+M):
+      On note-off the playhead exits the loop at LE. Blend from a copy of the region
+      just after loop_start (fade out) to the existing decay tail (fade in). The first
+      released sample sounds like audio[LS], giving a smooth phantom continuation before
+      easing into the real tail.
+
+    release_fade_ms defaults to loop_fade_ms / 2 — shorter so the natural decay arrives
+    quickly. Both fades use equal-gain (linear) curves, appropriate for blending near-
+    copies of the same periodic signal.
+    """
     sr = buf.sample_rate
-    fade_len = int(sr * fade_ms / 1000.0)
-    fade_len = min(fade_len, (loop_end - loop_start) // 4)
-    if fade_len < 8:
+    n = buf.data.shape[1]
+
+    if release_fade_ms is None:
+        release_fade_ms = loop_fade_ms / 2.0
+
+    loop_body = loop_end - loop_start
+    loop_fade_len = int(sr * loop_fade_ms / 1000.0)
+    loop_fade_len = min(loop_fade_len, loop_start, loop_body // 4)
+
+    release_fade_len = int(sr * release_fade_ms / 1000.0)
+    release_fade_len = min(release_fade_len, n - loop_end, loop_body // 4)
+
+    if loop_fade_len < 2 and release_fade_len < 2:
         return buf
+
     out = AudioBuffer(data=buf.data.copy(), sample_rate=sr)
-    t = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
-    tail = buf.data[:, loop_end - fade_len : loop_end]
-    head = buf.data[:, loop_start : loop_start + fade_len]
-    out.data[:, loop_end - fade_len : loop_end] = tail * np.sqrt(1.0 - t) + head * np.sqrt(t)
+
+    if loop_fade_len >= 2:
+        t = np.linspace(0.0, 1.0, loop_fade_len, dtype=np.float32)
+        existing = buf.data[:, loop_end - loop_fade_len : loop_end]
+        pre_ls = buf.data[:, loop_start - loop_fade_len : loop_start]
+        out.data[:, loop_end - loop_fade_len : loop_end] = existing * (1.0 - t) + pre_ls * t
+
+    if release_fade_len >= 2:
+        t = np.linspace(0.0, 1.0, release_fade_len, dtype=np.float32)
+        existing_tail = buf.data[:, loop_end : loop_end + release_fade_len]
+        post_ls = buf.data[:, loop_start : loop_start + release_fade_len]
+        out.data[:, loop_end : loop_end + release_fade_len] = post_ls * (1.0 - t) + existing_tail * t
+
     return out

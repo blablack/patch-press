@@ -142,12 +142,27 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
                 break
             log.warning(f"Splice validation failed after crossfade ({s}, {e}): {fail} — trying next candidate")
         if not loop_found:
-            if loop_cands:
-                analysis["loop_quality"] = round(best_quality, 3)
-                analysis["loop_warning"] = "splice_failed_after_crossfade"
-            else:
-                analysis["loop_quality"] = None
-                analysis["loop_warning"] = "no_suitable_loop_found"
+            # Guaranteed fallback for sustained notes: bake a crossfade over the
+            # central 50% of the sustain region unconditionally. Every note in a
+            # sustained patch gets a loop — partial multisample presets are unplayable.
+            if env.classification != "pluck":
+                sustain_len = env.sustain_end - env.sustain_start
+                loop_len = sustain_len // 2
+                if loop_len >= max(int(0.1 * audio.sample_rate), 4):
+                    s_fb = env.sustain_start + sustain_len // 4
+                    e_fb = s_fb + loop_len
+                    audio = bake_loop_crossfade(audio, s_fb, e_fb, config.loop_crossfade_ms * 2)
+                    loop_points = (s_fb, e_fb)
+                    analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
+                    analysis["loop_warning"] = "fallback_central_region"
+                    loop_found = True
+            if not loop_found:
+                if loop_cands:
+                    analysis["loop_quality"] = round(best_quality, 3)
+                    analysis["loop_warning"] = "splice_failed_after_crossfade"
+                else:
+                    analysis["loop_quality"] = None
+                    analysis["loop_warning"] = "no_suitable_loop_found"
 
     return Sample(
         note=sample.note,
