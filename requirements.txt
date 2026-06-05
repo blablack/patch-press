@@ -3,5 +3,5 @@ numpy==2.4.6
 soundfile==0.13.1
 lxml==6.1.1
 pyyaml==6.0.3
-tqdm==4.67.3
+tqdm==4.68.1
 librosa==0.11.0
