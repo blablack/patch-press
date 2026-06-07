@@ -1,6 +1,6 @@
 patch-render==0.3.0
 numpy==2.4.6
-soundfile==0.13.1
+soundfile==0.14.0
 lxml==6.1.1
 pyyaml==6.0.3
 tqdm==4.68.1

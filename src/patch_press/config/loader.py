@@ -74,7 +74,7 @@ def load_config(path: Path) -> RunConfig:
         loop=ana.get("loop", False),
         loop_use_tempo=ana.get("loop_use_tempo", False),
         loop_quality_threshold=ana.get("loop_quality_threshold", 0.8),
-        loop_crossfade_ms=ana.get("loop_crossfade_ms", 5.0),
+        loop_crossfade_ms=ana.get("loop_crossfade_ms", 10.0),
         normalize=ana.get("normalize", "per_set"),
         classify_drums=ana.get("classify_drums", False),
     )

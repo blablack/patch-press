@@ -13,8 +13,7 @@ try:
 except ImportError:
     _USE_EXTENSION = False
 
-from tqdm import tqdm
-
+from ...progress import ProgressBar as tqdm
 from ...config.schema import CaptureConfig, CLAPSourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet

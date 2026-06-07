@@ -45,7 +45,10 @@ class AnalysisConfig:
     loop: bool = False
     loop_use_tempo: bool = False
     loop_quality_threshold: float = 0.75
-    loop_crossfade_ms: float = 5.0
+    # Flat 10 ms for now (synths + pads). Covers ~1 fundamental period down to the low
+    # register and gives slop for non-phase-aligned (evolving) loops, without smearing
+    # movement. May differentiate per sound type later — only synths are being tested now.
+    loop_crossfade_ms: float = 10.0
     tempo_bpm: float | None = None
     normalize: str = "per_set"  # "per_sample" | "per_set" | "none"
     classify_drums: bool = False

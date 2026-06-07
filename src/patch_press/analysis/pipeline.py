@@ -6,7 +6,7 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 
-from tqdm import tqdm
+from ..progress import ProgressBar as tqdm
 
 
 _NOISY_LIBS = ("numba", "pymusiclooper", "librosa")
@@ -132,26 +132,27 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         best_quality = loop_cands[0][1] if loop_cands else 0.0
         loop_found = False
         for (s, e), quality in loop_cands:
+            # Bake a throwaway crossfade only to validate the seam. The real bake is deferred
+            # to analyze_sampleset (after the set-level pluck vote), so a loop that gets
+            # stripped never leaves a baked crossfade in the exported audio (Fix #1).
             audio_cf = bake_loop_crossfade(audio, s, e, config.loop_crossfade_ms) if config.loop_crossfade_ms > 0 else audio
             fail = validate_splice_reason(audio_cf.to_mono(), audio_cf.sample_rate, s, e)
             if not fail:
-                audio = audio_cf
                 loop_points = (s, e)
                 analysis["loop_quality"] = round(quality, 3)
                 loop_found = True
                 break
             log.warning(f"Splice validation failed after crossfade ({s}, {e}): {fail} — trying next candidate")
         if not loop_found:
-            # Guaranteed fallback for sustained notes: bake a crossfade over the
-            # central 50% of the sustain region unconditionally. Every note in a
-            # sustained patch gets a loop — partial multisample presets are unplayable.
+            # Guaranteed fallback for sustained notes: loop the central 50% of the sustain
+            # region unconditionally. Every note in a sustained patch gets a loop — partial
+            # multisample presets are unplayable. (Crossfade baked later, see Fix #1.)
             if env.classification != "pluck":
                 sustain_len = env.sustain_end - env.sustain_start
                 loop_len = sustain_len // 2
                 if loop_len >= max(int(0.1 * audio.sample_rate), 4):
                     s_fb = env.sustain_start + sustain_len // 4
                     e_fb = s_fb + loop_len
-                    audio = bake_loop_crossfade(audio, s_fb, e_fb, config.loop_crossfade_ms * 2)
                     loop_points = (s_fb, e_fb)
                     analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
                     analysis["loop_warning"] = "fallback_central_region"
@@ -173,6 +174,23 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         analysis=analysis,
         metadata=sample.metadata,
     )
+
+
+def _bake_sample_loop(sample: Sample, crossfade_ms: float) -> Sample:
+    """Bake the loop crossfade for a sample that kept its loop after the set-level vote.
+
+    Run once, after pluck classification (Fix #1), so a loop later stripped by a set-level
+    "Pluck" vote never leaves a baked crossfade in the exported audio. Fallback loops use a
+    longer crossfade, matching the original inline behaviour.
+    """
+    if sample.loop_points is None:
+        return sample
+    ms = crossfade_ms * 2 if sample.analysis.get("loop_warning") == "fallback_central_region" else crossfade_ms
+    if ms <= 0:
+        return sample
+    start, end = sample.loop_points
+    baked = bake_loop_crossfade(sample.audio, start, end, ms)
+    return dataclasses.replace(sample, audio=baked)
 
 
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
@@ -210,6 +228,11 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
             )
             for s in analyzed
         ]
+
+    # Bake the loop crossfade now that the set-level pluck vote is final — samples whose
+    # loops were just stripped keep their clean trimmed audio (Fix #1).
+    if config.loop:
+        analyzed = [_bake_sample_loop(s, config.loop_crossfade_ms) for s in analyzed]
 
     if config.loop:
         samples_with_loop = sum(1 for s in analyzed if s.loop_points is not None)

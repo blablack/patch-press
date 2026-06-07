@@ -1,8 +1,7 @@
 import logging
 from pathlib import Path
 
-from tqdm import tqdm
-
+from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
 from .pipeline import run
 

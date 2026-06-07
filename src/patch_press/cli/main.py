@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from tqdm import tqdm
+
+from ..progress import ProgressBar as tqdm
 
 
 class _TqdmLoggingHandler(logging.StreamHandler):

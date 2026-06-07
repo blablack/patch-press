@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 import yaml
-from tqdm import tqdm
+
+from ..progress import ProgressBar as tqdm
 
 log = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:10]
+        presets = presets[:30]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -321,8 +322,9 @@ def scan_clap(
 
     if debug:
         import random
+
         rng = random.Random(42)
-        preset_files = rng.sample(preset_files, min(10, len(preset_files)))
+        preset_files = rng.sample(preset_files, min(30, len(preset_files)))
 
     state_map: dict[str, CLAPSourceConfig] = {}
     for pf in preset_files:
@@ -455,7 +457,7 @@ def scan_library(
 
     subfolders = sorted(p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith("."))
     if debug:
-        subfolders = subfolders[:10]
+        subfolders = subfolders[:30]
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):

@@ -19,6 +19,12 @@ _AUTOCORR_MAX_S = 8.0   # maximum modulation period to detect
 _AUTOCORR_THRESHOLD = 0.35  # minimum normalised autocorrelation peak to accept period
 _RMS_MODULATION_DEPTH = 0.40  # (max-min)/mean of sustain RMS required before running autocorr
 _BPM_SNAP_TOLERANCE = 0.12  # accept period if within this fraction of a musical subdivision
+# Plateau extension (Fix #2): a sound that decays to a steady plateau *below* the 0.4 sustain
+# line still holds a loopable region until note-off. These gate an extend-only widening of
+# sustain_end so that plateau is not excluded.
+_PLATEAU_FLOOR = 0.15      # RMS fraction of peak still counted as "held" (vs released to silence)
+_PLATEAU_FLATNESS = 0.25   # max coefficient of variation of the settled tail to count as flat
+_MIN_PLATEAU_S = 0.5       # minimum tail length (s) before a plateau extension is considered
 
 
 def _to_db(v: float) -> float:
@@ -148,6 +154,26 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
     else:
         sustain_end = n
 
+    # Extend-only plateau check: the 0.4·peak threshold ends the region at the *first* dip
+    # below 40% of peak, so a sound that decays to a steady plateau below that line (held
+    # until note-off) loses its loopable plateau. If the tail past the drop SETTLES (flat and
+    # well above silence) rather than decaying out, extend sustain_end forward over it. This
+    # can only move sustain_end later, so a control that decays straight to silence (near-
+    # silent tail) never triggers it.
+    if sustain_end < n:
+        end_frame = sustain_end // _HOP
+        tail = rms[end_frame:]
+        min_plateau_frames = max(int(_MIN_PLATEAU_S * sr / _HOP), 2)
+        if len(tail) >= min_plateau_frames:
+            settle = tail[len(tail) // 2:]
+            settle_mean = float(settle.mean())
+            settle_cv = float(settle.std() / settle_mean) if settle_mean > 1e-6 else float("inf")
+            if settle_mean >= _PLATEAU_FLOOR * peak_rms and settle_cv <= _PLATEAU_FLATNESS:
+                above = np.where(tail >= _PLATEAU_FLOOR * peak_rms)[0]
+                if len(above) > 0:
+                    plateau_end = min((end_frame + int(above[-1]) + 1) * _HOP, n)
+                    sustain_end = max(sustain_end, plateau_end)
+
     # Fallback: too short a sustain region — use quarter-points
     min_region = int(1.0 * sr)
     if sustain_end - sustain_start < min_region:
@@ -155,10 +181,22 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
         attack_end = sustain_start = q
         sustain_end = 3 * q
 
-    # Classify: pluck vs sustained — average RMS over a window to smooth out attack transients
-    start_frame = min(peak_frame + int(_PLUCK_WINDOW_START_S * sr / _HOP), len(rms) - 1)
-    end_frame = min(peak_frame + int(_PLUCK_WINDOW_END_S * sr / _HOP), len(rms))
-    avg_rms = rms[start_frame:end_frame].mean() if end_frame > start_frame else rms[start_frame]
+    # Classify: pluck vs sustained — average RMS over a window to smooth out attack
+    # transients. The window is anchored to the sustained region, not a fixed offset past
+    # the raw peak: on short samples whose loudest RMS frame lands late (amplitude wobble
+    # on a hardware recording), peak+3s overruns the note's release into silence and a
+    # clearly-sustained note reads as a pluck. Clamp to [sustain_start, sustain_end] and,
+    # if the peak sits so late that the window collapses, measure the tail of the sustain.
+    sustain_start_frame = sustain_start // _HOP
+    sustain_end_frame = min(sustain_end // _HOP, len(rms))
+    win_lo = int(_PLUCK_WINDOW_START_S * sr / _HOP)
+    win_hi = int(_PLUCK_WINDOW_END_S * sr / _HOP)
+    start_frame = max(sustain_start_frame, min(peak_frame + win_lo, sustain_end_frame - 1))
+    end_frame = min(peak_frame + win_hi, sustain_end_frame)
+    if end_frame <= start_frame:
+        end_frame = sustain_end_frame
+        start_frame = max(sustain_start_frame, end_frame - win_lo)
+    avg_rms = rms[start_frame:end_frame].mean() if end_frame > start_frame else rms[max(0, end_frame - 1)]
     if avg_rms < _PLUCK_RMS_THRESHOLD * peak_rms:
         return EnvelopeResult(
             peak_db=peak_db,
@@ -172,8 +210,7 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
         )
 
     # Sustained — check for modulation, but only if RMS varies enough to suggest a real LFO/delay
-    sustain_start_frame = sustain_start // _HOP
-    sustain_end_frame = min(sustain_end // _HOP, len(rms))
+    # (sustain_start_frame / sustain_end_frame computed above for the pluck window).
     sustain_rms = rms[sustain_start_frame:sustain_end_frame]
     rms_mean = sustain_rms.mean() if len(sustain_rms) > 0 else 0.0
     rms_depth = (sustain_rms.max() - sustain_rms.min()) / rms_mean if rms_mean > 1e-6 else 0.0
