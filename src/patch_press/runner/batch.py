@@ -20,7 +20,8 @@ def run_batch(
     for cfg_path in tqdm(config_paths, desc="Batch", unit="preset"):
         try:
             config = load_config(cfg_path)
-            expected = output_path / f"{config.output.name.strip()}.xml"
+            safe_name = config.output.name.strip().replace("/", "_").replace("\\", "_")
+            expected = output_path.parent / "SYNTHS" / output_path.name / f"{safe_name}.xml"
             if skip_existing and expected.exists():
                 results[cfg_path] = "skipped"
                 tqdm.write(f"SKIP   {cfg_path.stem}")

@@ -59,7 +59,12 @@ from ..config.schema import AnalysisConfig
 from ..model.sample import Category, Sample, SampleSet
 from .classify import classify_drum
 from .envelope import analyze_envelope
-from .loop import bake_loop_crossfade, find_loop_candidates, validate_splice_reason
+from .loop import (
+    bake_loop_crossfade,
+    central_fallback_loop,
+    find_loop_candidates,
+    validate_splice_reason,
+)
 from .normalize import normalize_sample, normalize_set
 from .pitch import verify_pitch
 from .trim import trim_silence
@@ -131,36 +136,37 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         loop_cands = find_loop_candidates(audio, config.loop_quality_threshold, config.tempo_bpm, envelope=env, midi_note=sample.note)
         best_quality = loop_cands[0][1] if loop_cands else 0.0
         loop_found = False
+        mono = audio.to_mono()
         for (s, e), quality in loop_cands:
-            # Bake a throwaway crossfade only to validate the seam. The real bake is deferred
-            # to analyze_sampleset (after the set-level pluck vote), so a loop that gets
-            # stripped never leaves a baked crossfade in the exported audio (Fix #1).
-            audio_cf = bake_loop_crossfade(audio, s, e, config.loop_crossfade_ms) if config.loop_crossfade_ms > 0 else audio
-            fail = validate_splice_reason(audio_cf.to_mono(), audio_cf.sample_rate, s, e)
+            # Validate on the RAW (pre-crossfade) audio. The loop crossfade manufactures a
+            # smooth seam by construction (it fades mono[end-1] to audio[start-1]), so a
+            # post-crossfade seam check is blind — it passes even a loop whose mid-crossfade
+            # phase-cancels. The splice quality we care about (start and end on the same
+            # waveform phase, so the blend stays in phase) is intrinsic to the loop points.
+            fail = validate_splice_reason(mono, audio.sample_rate, s, e)
             if not fail:
                 loop_points = (s, e)
                 analysis["loop_quality"] = round(quality, 3)
                 loop_found = True
                 break
-            log.warning(f"Splice validation failed after crossfade ({s}, {e}): {fail} — trying next candidate")
+            log.warning(f"Splice validation failed ({s}, {e}): {fail} — trying next candidate")
         if not loop_found:
             # Guaranteed fallback for sustained notes: loop the central 50% of the sustain
-            # region unconditionally. Every note in a sustained patch gets a loop — partial
-            # multisample presets are unplayable. (Crossfade baked later, see Fix #1.)
+            # region. Every note in a sustained patch gets a loop — partial multisample
+            # presets are unplayable. central_fallback_loop snaps the length to whole periods
+            # and phase-locks the end so even this last resort can't phase-cancel. (Crossfade
+            # baked later, see Fix #1.)
             if env.classification != "pluck":
-                sustain_len = env.sustain_end - env.sustain_start
-                loop_len = sustain_len // 2
-                if loop_len >= max(int(0.1 * audio.sample_rate), 4):
-                    s_fb = env.sustain_start + sustain_len // 4
-                    e_fb = s_fb + loop_len
-                    loop_points = (s_fb, e_fb)
+                fb = central_fallback_loop(audio, env.sustain_start, env.sustain_end, sample.note)
+                if fb is not None:
+                    loop_points = fb
                     analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
                     analysis["loop_warning"] = "fallback_central_region"
                     loop_found = True
             if not loop_found:
                 if loop_cands:
                     analysis["loop_quality"] = round(best_quality, 3)
-                    analysis["loop_warning"] = "splice_failed_after_crossfade"
+                    analysis["loop_warning"] = "splice_failed"
                 else:
                     analysis["loop_quality"] = None
                     analysis["loop_warning"] = "no_suitable_loop_found"

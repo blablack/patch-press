@@ -49,7 +49,31 @@ _TEMPO_SUBDIVISIONS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0]
 # period count: a high note can span hundreds of cycles in a few milliseconds.
 _LOOP_LEN_TARGET_S = 1.5   # loops at/above this length earn the full length reward
 _W_LENGTH = 0.15           # weight of the length reward
-_W_PLACEMENT = 0.15        # penalty for amplitude drift between loop start and end (loop on a slope)
+# Whole-loop drift control (replaces the old RMS-only placement term). The seam can match
+# perfectly while the tone still drifts ACROSS the loop, so each wrap jumps — a per-loop
+# wobble. amp_drift compares the positive AND negative peak of the post-wrap window to the
+# pre-wrap window (RMS is blind to a constant-RMS asymmetry drift; peaks are not).
+#
+# amp_drift is a GATE, not a weak additive penalty: drift magnitudes are small (a few percent),
+# so at any sane additive weight the length reward swamps them. Like _SEAM_GATE it filters the
+# pool so the length reward then picks the longest *stationary* loop; self-targeting (a static
+# sound drifts ~0 at every length, so all survive and a long loop still wins) and never wipes.
+_DRIFT_GATE = 0.025        # max peak/asymmetry drift across the wrap before a loop is gated out
+# The drift gate only engages for sounds that are SUPPOSED to be steady. If the peak envelope
+# swings more than this across the sustain (a swell/decay/reverse lead), the sound genuinely
+# evolves: no sub-loop is representative, and gating to the flattest one collapses it to a tiny
+# loop that sounds worse than a long one. Above this, stand the gate down and keep prior length
+# behaviour — bounds this change's blast radius to the steady-tone wobble it targets.
+_DRIFT_GATE_MAX_MOVE = 0.25
+# timbre is the same end→start chroma already computed for the seam, reused for free; a light
+# additive penalty (the endpoint form keeps a legitimate whole-cycle pad loop unpenalised).
+_W_TIMBRE_DRIFT = 0.10     # weight of the timbre (chroma) drift penalty in ranking
+_SEAM_GATE = 0.20          # max waveform mismatch (normalised RMS) between the loop start and
+                           # end windows. Self-targeting: static sounds match at any length so
+                           # every candidate passes and the length reward still picks a long loop;
+                           # only loops that wrap across a real phase/timbre change (the cause of
+                           # the mid-crossfade dip) are gated out, forcing a shorter clean loop.
+                           # Never wipes the pool — if all exceed it, the cleanest seam is kept.
 
 
 def _rms_envelope(mono: np.ndarray, hop: int) -> np.ndarray:
@@ -126,6 +150,111 @@ def _snap_to_slope_zero_crossing(
     return lo + nearest
 
 
+def _snap_to_flat(mono: np.ndarray, frame: int, radius: int, win: int) -> int:
+    """Return the flattest (lowest local range) point near frame.
+
+    A loop boundary placed on a *flat* part of the cycle has near-identical neighbouring
+    samples, so the wrap reproduces a natural low-amplitude step regardless of waveform.
+    Zero crossings are the opposite for steep waves: a square crosses zero on its *edge*,
+    the worst place to splice, which makes a clean phase-locked loop read as a click to the
+    amplitude/derivative checks. Snapping the start here keeps the seam off the edge.
+    """
+    win = max(4, win)
+    lo = max(0, frame - radius)
+    hi = min(len(mono) - win, frame + radius)
+    if hi <= lo:
+        return frame
+    seg = mono[lo:hi + win]
+    if len(seg) < win + 1:
+        return frame
+    sw = np.lib.stride_tricks.sliding_window_view(seg, win)
+    rng = sw.max(axis=1) - sw.min(axis=1)
+    return lo + int(np.argmin(rng)) + win // 2
+
+
+def _seam_match(mono: np.ndarray, start: int, end: int, win: int) -> float:
+    """Normalised RMS difference between the windows the loop crossfade blends.
+
+    The loop crossfade fades mono[end-win:end] into mono[start-win:start], so those are the
+    windows that must match for the equal-gain blend not to cancel (the mid-crossfade dip).
+    0 = identical (phase-locked, no timbre change across the wrap); higher = the loop wraps
+    across a phase or timbre change. The time-domain sensor the chroma/amp/slope score misses.
+    """
+    win = min(win, (end - start) // 2, start, end)
+    if win < 8:
+        return 0.0
+    a = mono[start - win:start]
+    b = mono[end - win:end]
+    denom = float(np.sqrt(np.mean(b ** 2))) + 1e-9
+    return float(np.sqrt(np.mean((a - b) ** 2)) / denom)
+
+
+def _amp_drift(mono: np.ndarray, start: int, end: int, win: int, peak: float) -> float:
+    """Peak/asymmetry drift across the loop wrap, as a fraction of peak amplitude.
+
+    The wrap plays mono[end-1] then mono[start], so the window just before end (pre) and the
+    window just after start (post) are what abut at the seam. A loop whose seam is phase-clean
+    can still have these two windows sit at different points of a slow tremolo/beating, so the
+    amplitude jumps once per loop. Track the positive and negative peak SEPARATELY: a constant-
+    RMS asymmetry drift (positive peak sweeps while the negative stays flat) moves only one of
+    them, and is invisible to an RMS or max-abs measure. 0 = the loop sits on a flat span (or
+    spans a whole modulation cycle); higher = it wraps across a drift.
+    """
+    win = min(win, (end - start) // 2, start, len(mono) - end + win)
+    if win < 8 or start + win > len(mono) or end - win < 0:
+        return 0.0
+    post = mono[start:start + win]
+    pre = mono[end - win:end]
+    d_hi = abs(float(post.max()) - float(pre.max()))
+    d_lo = abs(float(post.min()) - float(pre.min()))
+    return (d_hi + d_lo) / (2.0 * (peak or 1.0))
+
+
+def _peak_env_movement(mono: np.ndarray, start: int, end: int, chunks: int = 12) -> float:
+    """How much the absolute-peak envelope swings across [start, end), as a fraction of its max.
+
+    Splits the region into `chunks` blocks and takes each block's peak. ~0 means the sound holds
+    a steady level (a flat tone, possibly with a subtle beat — the drift gate's target); high
+    means it swells/decays/evolves dramatically, where no sub-loop is representative and forcing
+    a flat one loses the character, so the drift gate should stand down and let length decide.
+    """
+    seg = np.abs(mono[start:end])
+    if len(seg) < chunks * 4:
+        return 0.0
+    step = len(seg) // chunks
+    peaks = [float(seg[i * step:(i + 1) * step].max()) for i in range(chunks)]
+    mx = max(peaks)
+    return (mx - min(peaks)) / mx if mx > 1e-9 else 0.0
+
+
+def _phase_lock_end(mono: np.ndarray, start: int, end_approx: int, period: int, win: int) -> int:
+    """Return the loop end whose pre-wrap window matches the loop start's.
+
+    Finds e near end_approx minimising SSD(mono[e-win:e], mono[start-win:start]) — i.e. the
+    two windows the loop crossfade actually blends (mono[end-win:end] faded into
+    mono[start-win:start]). Aligning *these* keeps the equal-gain blend from cancelling (the
+    mid-crossfade dip) and the wrap in phase, on rich/steep waveforms (e.g. a square).
+
+    Independent zero-crossing snapping cannot guarantee this: a harmonically rich wave has
+    several same-slope zero crossings per period, so the two endpoints can snap to different
+    sub-phases, knocking the loop off integer periods. Only used when a fundamental period
+    is known; falls back to the caller's zero-crossing snap otherwise.
+    """
+    win = min(win, (end_approx - start) // 2)
+    if win < 8 or start - win < 0:
+        return end_approx
+    lo = max(start + period, win, end_approx - period)
+    hi = min(len(mono), end_approx + period)
+    if lo >= hi:
+        return end_approx
+    cand = np.arange(lo, hi)
+    w = np.arange(-win, 0)            # window ENDING at each candidate e: mono[e-win:e]
+    ref = mono[start - win:start]     # the pre-loop-start window the crossfade fades in
+    seg = mono[cand[:, None] + w[None, :]]
+    ssd = np.sum((seg - ref[None, :]) ** 2, axis=1)
+    return int(cand[int(np.argmin(ssd))])
+
+
 def _midi_to_period(sr: int, midi_note: int) -> int:
     freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
     return max(1, int(round(sr / freq)))
@@ -188,6 +317,25 @@ def _chroma_score(mono: np.ndarray, sr: int, start: int, end: int) -> float:
     return float(np.dot(ca, cb) / denom) if denom > 0 else 0.0
 
 
+def _seam_slopes(mono: np.ndarray, start: int, end: int, w: int) -> tuple[float, float]:
+    """Forward slopes over `w` samples just after loop_start and just after loop_end.
+
+    Both are FORWARD (same direction) and one loop-continuation apart: mono[end:end+w] is the
+    natural next period after the loop body, which equals mono[start:start+w] for a clean
+    wrap, so a phase-aligned loop yields matching slopes (~0 difference). Comparing the
+    forward slope at start to the *backward* slope arriving at end instead measures the
+    waveform's own curvature at the splice — and _snap_to_flat deliberately puts the loop
+    start on an apex (a flat extremum), where the slope reverses sign. That reads as a large
+    false discontinuity, and it scales with pitch (a fixed window spans more of a shorter
+    period), so high notes get wrongly rejected and forced onto the unaligned central-region
+    fallback — whose crossfade then phase-cancels.
+    """
+    n = len(mono)
+    s_start = float(mono[min(start + w, n - 1)]) - float(mono[start])
+    s_end = float(mono[min(end + w, n - 1)]) - float(mono[min(end, n - 1)])
+    return s_start, s_end
+
+
 def _boundary_components(
     mono: np.ndarray,
     sr: int,
@@ -196,9 +344,15 @@ def _boundary_components(
 ) -> dict:
     """Chroma/amp/slope components and the weighted score for the seam mono[end-1] → mono[start].
 
-    end is exclusive (loop plays [start, end)). Both amplitude and slope are evaluated at
-    the actual seam samples, matching validate_splice_reason. Chroma is computed at the
-    (post-snap) endpoints so it reflects the real end→start seam, not the grid fingerprint.
+    end is exclusive (loop plays [start, end)). Chroma is computed at the (post-snap)
+    endpoints so it reflects the real end→start seam, not the grid fingerprint.
+
+    NOTE: slope_score here is a ranking heuristic, deliberately distinct from the same-direction
+    correctness gate in validate_splice_reason. It compares the forward slope after loop_start
+    to the backward slope arriving at loop_end and normalises by the local slope magnitude, so
+    short loops spliced on a waveform apex score low. That down-weights them relative to longer
+    loops, working WITH the length reward in find_loop_candidates — switching it to the
+    validation deriv inflates short apex loops and lets them out-rank longer ones.
     """
     n = len(mono)
 
@@ -222,18 +376,20 @@ def _boundary_components(
 def validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> str:
     """Return empty string if the splice is clean, else a description of the failing check.
 
+    Validate on the RAW (pre-crossfade) audio: the loop crossfade manufactures a smooth seam
+    by construction, so checking the baked audio passes anything. amp_disc is the residual
+    value step at the wrap; deriv_disc uses _seam_slopes (same-direction) so a phase-aligned
+    loop spliced on a waveform apex is not mistaken for a click.
+
     end is treated as exclusive: the loop plays [start, end), so the last sample
     before jumping back is mono[end-1]. After zero-crossing snap with the +1 shift
     applied in find_loop_points, mono[end-1] is at the crossing itself (small value).
     """
     if start < 1 or end < 2 or end >= len(mono):
         return "out of bounds"
-    n = len(mono)
     peak = float(np.abs(mono).max()) or 1.0
     amp_disc = abs(float(mono[end - 1]) - float(mono[start])) / peak
-    w = _SLOPE_WINDOW
-    slope_end = float(mono[end - 1]) - float(mono[max(end - 1 - w, 0)])
-    slope_start = float(mono[min(start + w, n - 1)]) - float(mono[start])
+    slope_start, slope_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
     deriv_disc = abs(slope_end - slope_start) / (2.0 * peak)
     if amp_disc >= _AMP_DISC_THRESHOLD:
         return f"amp_disc={amp_disc:.3f} (threshold {_AMP_DISC_THRESHOLD})"
@@ -450,12 +606,9 @@ def _rms_depth_region(mono: np.ndarray, start: int, end: int) -> float:
 
 def _seam_disc(mono: np.ndarray, start: int, end: int) -> tuple[float, float]:
     """Raw amp/deriv discontinuity at the seam — mirrors validate_splice_reason."""
-    n = len(mono)
     peak = float(np.abs(mono).max()) or 1.0
     amp_disc = abs(float(mono[end - 1]) - float(mono[start])) / peak
-    w = _SLOPE_WINDOW
-    slope_end = float(mono[end - 1]) - float(mono[max(end - 1 - w, 0)])
-    slope_start = float(mono[min(start + w, n - 1)]) - float(mono[start])
+    slope_start, slope_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
     deriv_disc = abs(slope_end - slope_start) / (2.0 * peak)
     return amp_disc, deriv_disc
 
@@ -554,15 +707,32 @@ def find_loop_candidates(
     # (e.g. 50 ms at A5) are not discarded by the 1s _MIN_GAP_S floor.
     min_loop = max(int(0.05 * sr), (4 * t_wave) if t_wave else int(_MIN_GAP_S * sr))
 
+    # Window for phase-lock / seam-match: cover the loop crossfade (~10 ms) plus a couple of
+    # periods, so we align exactly the samples the crossfade blends.
+    lock_win = max(2 * t_wave, int(0.012 * sr)) if t_wave else 0
+
+    # Window for the peak/asymmetry drift sensor: a few fundamental periods so the peak is
+    # stable, wider than the seam-match window. Pitch-free sounds use a fixed ~30 ms.
+    drift_win = max(lock_win, 4 * t_wave) if t_wave else int(0.03 * sr)
+    peak = float(np.abs(mono).max()) or 1.0
+
     # Pass 1: snap all candidates to same-direction zero crossings, deduplicate.
     seen_snap: set[tuple[int, int]] = set()
     snap_pool: list[tuple[int, int, float, str]] = []
     for s, e, pre_chroma, src in candidates:
         if s < 0 or e >= n - _FRAME:
             continue
-        rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
-        s_snap = _snap_to_slope_zero_crossing(mono, s, rising, zc_radius)
-        e_snap = _snap_to_slope_zero_crossing(mono, e, rising, zc_radius) + 1
+        if t_wave:
+            # Pitched: put the start on a flat part of the cycle (not the steep zero
+            # crossing) and phase-lock the end to it. Independent zero-crossing snapping
+            # breaks period alignment on rich waveforms and lands the seam on the edge,
+            # causing the mid-crossfade dip and a false click reading.
+            s_snap = _snap_to_flat(mono, s, zc_radius, max(4, t_wave // 8))
+            e_snap = _phase_lock_end(mono, s_snap, s_snap + (e - s), t_wave, lock_win)
+        else:
+            rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
+            s_snap = _snap_to_slope_zero_crossing(mono, s, rising, zc_radius)
+            e_snap = _snap_to_slope_zero_crossing(mono, e, rising, zc_radius) + 1
         if s_snap >= e_snap or e_snap - s_snap < min_loop or e_snap >= n:
             continue
         key = (s_snap, e_snap)
@@ -571,13 +741,14 @@ def find_loop_candidates(
             snap_pool.append((s_snap, e_snap, pre_chroma, src))
 
     # Pass 2: score at the snapped endpoints so the score reflects the actual seam.
-    scored: list[tuple[float, int, int, str]] = []
+    scored: list[tuple[float, int, int, str, float, float]] = []
     dbg_cands: list[dict] = []
     for s, e, _sim, src in snap_pool:
         comps = _boundary_components(mono, sr, s, e)
         score = comps["score"]
+        amp_drift = _amp_drift(mono, s, e, drift_win, peak)
         if score >= quality_threshold:
-            scored.append((score, s, e, src))
+            scored.append((score, s, e, src, comps["chroma"], amp_drift))
         if dbg:
             amp_disc, deriv_disc = _seam_disc(mono, s, e)
             dbg_cands.append({
@@ -592,24 +763,44 @@ def find_loop_candidates(
                 "slope_score": round(comps["slope_score"], 4),
                 "amp_disc": round(amp_disc, 4),
                 "deriv_disc": round(deriv_disc, 4),
+                "amp_drift": round(amp_drift, 4),
+                "timbre_drift": round(1.0 - comps["chroma"], 4),
                 "passed": score >= quality_threshold,
             })
 
-    # Rank passing candidates by seam quality plus a length reward and a placement penalty,
-    # so the first pick is a longer loop on a stable (flat) part of the envelope rather than
-    # the shortest seam-clean window. The returned score stays the base quality score.
-    rank_env = _rms_envelope(mono, _ENV_HOP)
+    # Rank passing candidates by a length reward and the timbre-drift penalty, so the first pick
+    # is a long loop on a timbrally-stable span. amp_drift is applied as a gate below, not here.
+    # The returned score stays the base quality score.
+    def _rank(score: float, chroma: float, length: int) -> float:
+        length_reward = min((length / sr) / _LOOP_LEN_TARGET_S, 1.0)
+        timbre_drift = 1.0 - chroma
+        return score + _W_LENGTH * length_reward - _W_TIMBRE_DRIFT * timbre_drift
 
-    def _rank(score: float, s: int, e: int) -> float:
-        length_reward = min(((e - s) / sr) / _LOOP_LEN_TARGET_S, 1.0)
-        fs = min(s // _ENV_HOP, len(rank_env) - 1)
-        fe = min(e // _ENV_HOP, len(rank_env) - 1)
-        ls, le = float(rank_env[fs]), float(rank_env[fe])
-        level_drop = abs(ls - le) / max(ls, le, 1e-9)
-        return score + _W_LENGTH * length_reward - _W_PLACEMENT * level_drop
-
-    scored.sort(key=lambda t: (_rank(t[0], t[1], t[2]), t[0], t[1], t[2]), reverse=True)
-    result = [((s, e), sc) for sc, s, e, _ in scored[:max_candidates]]
+    # Seam gate (pitched only): drop loops that wrap across too much phase/timbre change — the
+    # cause of the mid-crossfade dip — so the length reward picks the longest *clean* loop
+    # rather than the longest loop. Never wipe the pool: if every candidate exceeds the gate
+    # (a strongly evolving sound), keep the cleanest seam instead of falling through to the
+    # central-region fallback.
+    seam_of = (lambda s, e: _seam_match(mono, s, e, lock_win)) if t_wave else (lambda s, e: 0.0)
+    clean = [t for t in scored if seam_of(t[1], t[2]) <= _SEAM_GATE]
+    # The drift gate only engages for steady sounds; a dramatically-evolving sound keeps prior
+    # length behaviour (see _DRIFT_GATE_MAX_MOVE).
+    peak_move = _peak_env_movement(mono, region_start, region_end)
+    steady = peak_move <= _DRIFT_GATE_MAX_MOVE
+    if clean:
+        # Drift gate within the seam-clean pool: drop loops that wrap across a peak/asymmetry
+        # drift (the per-loop wobble) so the length reward picks the longest *stationary* loop,
+        # not just the longest one. Never wipe — if every seam-clean loop drifts, keep them all
+        # and let length/timbre decide (no worse than before the gate). t[5] is amp_drift.
+        low_drift = [t for t in clean if t[5] <= _DRIFT_GATE] if steady else []
+        pool = low_drift if low_drift else clean
+        pool.sort(key=lambda t: (_rank(t[0], t[4], t[2] - t[1]), t[1], t[2]), reverse=True)
+        ranked = pool
+    else:
+        # all seams exceed the gate → cleanest seam first (then longer / higher score)
+        ranked = sorted(scored, key=lambda t: (-seam_of(t[1], t[2]), _rank(t[0], t[4], t[2] - t[1])), reverse=True)
+    result = [((s, e), sc) for sc, s, e, *_ in ranked[:max_candidates]]
+    scored = ranked  # keep debug ('best', n_passed) consistent with the returned order
 
     if dbg:
         hop = int(_CHROMA_GRID_HOP_S * sr)
@@ -630,6 +821,8 @@ def find_loop_candidates(
                 "chroma_movement": round(_chroma_movement(fps), 4),
                 "centroid_cv": round(_centroid_movement(mono, sr, region_start, region_end), 4),
                 "rms_depth": round(_rms_depth_region(mono, region_start, region_end), 4),
+                "peak_movement": round(peak_move, 4),
+                "drift_gated": bool(steady),
                 "candidates": dbg_cands,
             },
         )
@@ -652,6 +845,43 @@ def find_loop_points(
     if cands:
         return cands[0][0], cands[0][1]
     return None, 0.0
+
+
+def central_fallback_loop(
+    buf: AudioBuffer,
+    sustain_start: int,
+    sustain_end: int,
+    midi_note: int | None = None,
+) -> tuple[int, int] | None:
+    """Last-resort loop over the central ~50% of the sustain when no scored candidate passed.
+
+    Sustained notes must all get a loop (a partial multisample is unplayable). When a
+    fundamental period is detectable, snap the length to an integer number of periods and
+    phase-lock the end window to the start, so even this fallback blends in-phase windows and
+    cannot phase-cancel in the crossfade. Without a period (e.g. dual-oscillator/octave
+    patches) fall back to the raw central window. Returns (start, end) or None if the sustain
+    region is too short to loop.
+    """
+    mono = buf.to_mono()
+    sr = buf.sample_rate
+    n = len(mono)
+    region = sustain_end - sustain_start
+    loop_len = region // 2
+    if loop_len < max(int(0.1 * sr), 4):
+        return None
+    start = sustain_start + region // 4
+    hint = _midi_to_period(sr, midi_note) if midi_note is not None else None
+    t_wave = _detect_waveform_period(mono, sr, sustain_start, sustain_end, hint)
+    if t_wave:
+        loop_len = max(1, round(loop_len / t_wave)) * t_wave
+        start = _snap_to_flat(mono, start, max(_ZC_SNAP_RADIUS, t_wave // 2), max(4, t_wave // 8))
+        lock_win = max(2 * t_wave, int(0.012 * sr))
+        end = _phase_lock_end(mono, start, start + loop_len, t_wave, lock_win)
+    else:
+        end = start + loop_len
+    if start < 1 or end <= start or end >= n:
+        return None
+    return start, end
 
 
 def bake_loop_crossfade(

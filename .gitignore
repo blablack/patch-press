@@ -1,5 +1,6 @@
 # files
 debug_*
+audition_preset.sh
 
 # folders
 __pycache__

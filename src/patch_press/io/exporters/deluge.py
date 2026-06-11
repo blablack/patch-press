@@ -63,7 +63,7 @@ class DelugeExporter:
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         safe_name = config.name.strip().replace("/", "_").replace("\\", "_")
         wav_dir = path.parent / "SAMPLES" / path.name / safe_name
-        xml_path = path / f"{safe_name}.xml"
+        xml_path = path.parent / "SYNTHS" / path.name / f"{safe_name}.xml"
         wav_paths = _write_wavs(sset, wav_dir)
 
         if sset.category == Category.DRUM:

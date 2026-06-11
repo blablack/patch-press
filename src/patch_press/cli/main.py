@@ -166,7 +166,7 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # patch-press sample config.yaml --path /media/DELUGE/SYNTHS/MyPlugin --format deluge
+    # patch-press sample config.yaml --path /media/DELUGE/MyPlugin --format deluge
     sample_p = sub.add_parser(
         "sample", help="Sample one preset from a YAML config file"
     )
@@ -192,7 +192,7 @@ def main() -> None:
         help="Number of parallel analysis workers (default: 1)",
     )
 
-    # patch-press batch configs/*.yaml --path /media/DELUGE/SYNTHS/MyPlugin --format deluge
+    # patch-press batch configs/*.yaml --path /media/DELUGE/MyPlugin --format deluge
     batch_p = sub.add_parser("batch", help="Run multiple configs in parallel")
     batch_p.add_argument(
         "configs", nargs="+", metavar="CONFIG", help="Config paths or globs"

@@ -11,6 +11,8 @@ log = logging.getLogger(__name__)
 
 _HOP = 512
 _SUSTAIN_THRESHOLD = 0.4  # RMS fraction below which sustain has ended
+_PLATEAU_LEVEL = 0.9  # RMS fraction of peak that marks the end of attack / start of the plateau
+_MIN_BACKWARD_PLATEAU_S = 2.0  # min flat near-peak run before the RMS max to reclaim as sustain_start
 _PLUCK_WINDOW_START_S = 1.5  # start of averaging window for pluck check
 _PLUCK_WINDOW_END_S = 3.0   # end of averaging window for pluck check
 _PLUCK_RMS_THRESHOLD = 0.08  # if average RMS in window falls below this fraction of peak → pluck
@@ -142,11 +144,28 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
 
     peak_frame = int(np.argmax(rms))
     peak_rms = float(rms[peak_frame])
-    attack_end = sustain_start = peak_frame * _HOP
+    threshold = _SUSTAIN_THRESHOLD * peak_rms
+
+    # sustain_start: normally the peak frame, but extended back over a genuine flat plateau when
+    # the RMS max drifted late. On a flat-topped held note the global max can land anywhere along
+    # the plateau (often a swell just before note-off); anchoring sustain_start there discards the
+    # whole held plateau and collapses the loopable region to a sliver straddling the release,
+    # forcing the loop finder to pick a loop_end in the decay. Walk back from the peak while RMS
+    # stays within _PLATEAU_LEVEL of it, and only adopt that earlier start when the run is at least
+    # _MIN_BACKWARD_PLATEAU_S long. The length guard keeps ordinary attacks, onset transients and
+    # short decays (only a brief near-peak run before the max) anchored at the peak as before, so
+    # the fix fires solely for the long-flat-plateau pathology it targets.
+    before_peak = rms[: peak_frame + 1]
+    below_before = np.where(before_peak < _PLATEAU_LEVEL * peak_rms)[0]
+    plateau_start = int(below_before[-1]) + 1 if len(below_before) > 0 else 0
+    if (peak_frame - plateau_start) * _HOP >= _MIN_BACKWARD_PLATEAU_S * sr:
+        sustain_start = plateau_start * _HOP
+    else:
+        sustain_start = peak_frame * _HOP
+    attack_end = sustain_start
     attack_s = round(attack_end / sr, 4)
 
     # Walk forward from peak to find where RMS drops below sustain threshold
-    threshold = _SUSTAIN_THRESHOLD * peak_rms
     after_peak = rms[peak_frame:]
     drop_frames = np.where(after_peak < threshold)[0]
     if len(drop_frames) > 0:
