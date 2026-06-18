@@ -117,7 +117,7 @@ class VSTAdapter:
         self._apply_preset(preset)
         return self.render_note(note, velocity, hold_s, hold_s + release_s)
 
-    def capture(self, capture: CaptureConfig, name: str | None = None) -> SampleSet:
+    def capture(self, capture: CaptureConfig, name: str | None = None, progress=None) -> SampleSet:
         preset_name = self._config.preset or Path(str(self._config.plugin)).stem
         sset_name = name or preset_name
 
@@ -128,11 +128,19 @@ class VSTAdapter:
         total = len(notes) * len(capture.velocities) * capture.round_robins
         samples: list[Sample] = []
 
-        with tqdm(total=total, desc="Capturing", unit="note", leave=False) as pbar:
+        # When the caller supplies a bar (batch run), advance that shared per-note bar so the
+        # outer progress moves note-by-note instead of once per preset. Standalone (scan,
+        # single sample) keeps its own local "Capturing" bar.
+        own_bar = progress is None
+        pbar = tqdm(total=total, desc="Capturing", unit="note", leave=False) if own_bar else progress
+        try:
             for note in notes:
                 for vel in capture.velocities:
                     for rr in range(1, capture.round_robins + 1):
-                        pbar.set_postfix(note=note, vel=vel, rr=rr)
+                        if own_bar:
+                            pbar.set_postfix(note=note, vel=vel, rr=rr)
+                        else:
+                            pbar.set_postfix_str(f"{sset_name} n{note}")
                         audio = self._render(
                             self._current_raw_state,
                             note,
@@ -148,9 +156,13 @@ class VSTAdapter:
                                 velocity=vel,
                                 round_robin=rr,
                                 audio=audio,
+                                note_off=int(round(capture.duration_s * capture.sample_rate)),
                             )
                         )
                         pbar.update(1)
+        finally:
+            if own_bar:
+                pbar.close()
 
         return SampleSet(
             name=sset_name,

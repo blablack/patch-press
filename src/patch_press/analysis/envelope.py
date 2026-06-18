@@ -16,6 +16,12 @@ _MIN_BACKWARD_PLATEAU_S = 2.0  # min flat near-peak run before the RMS max to re
 _PLUCK_WINDOW_START_S = 1.5  # start of averaging window for pluck check
 _PLUCK_WINDOW_END_S = 3.0   # end of averaging window for pluck check
 _PLUCK_RMS_THRESHOLD = 0.08  # if average RMS in window falls below this fraction of peak → pluck
+# Note-off pluck check (rendered VST/CLAP captures only — we know exactly when the key was
+# released). A held note that has decayed to near-silence *by the moment of release* never
+# sustained: it is a pluck, and looping its decay tail sounds unnatural. This is the ground
+# truth the fixed window above only estimates; use it whenever note_off is known.
+_NOTEOFF_WINDOW_S = 0.25      # RMS averaged over this span ending at note-off
+_PLUCK_NOTEOFF_THRESHOLD = 0.10  # RMS at note-off below this fraction of peak → pluck
 _AUTOCORR_MIN_S = 0.35  # minimum modulation period to detect (excludes sub-quarter FM beating)
 _AUTOCORR_MAX_S = 8.0   # maximum modulation period to detect
 _AUTOCORR_THRESHOLD = 0.35  # minimum normalised autocorrelation peak to accept period
@@ -104,7 +110,25 @@ def _snap_to_bpm_subdivision(period_s: float, bpm: float) -> float | None:
     return None
 
 
-def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResult:
+def _is_pluck_at_noteoff(rms: np.ndarray, note_off: int, peak_rms: float, sr: int) -> bool:
+    """True when the held note has decayed to near-silence by the moment of release.
+
+    `note_off` is a sample index into the (already trimmed) audio. If trailing silence was
+    trimmed away before note-off, the note went silent while still held → pluck. Otherwise
+    measure the RMS over a short window ending at note-off and compare to peak.
+    """
+    note_off_frame = note_off // _HOP
+    if note_off_frame <= 0:
+        return False  # release at/before the very start — can't judge, defer to other logic
+    if note_off_frame >= len(rms):
+        return True  # audio ended (trimmed to silence) before release → decayed while held
+    win = max(1, int(_NOTEOFF_WINDOW_S * sr / _HOP))
+    lo = max(0, note_off_frame - win)
+    hold_end_rms = float(rms[lo:note_off_frame].mean())
+    return hold_end_rms < _PLUCK_NOTEOFF_THRESHOLD * peak_rms
+
+
+def analyze_envelope(buf: AudioBuffer, bpm: float | None = None, note_off: int | None = None) -> EnvelopeResult:
     mono = buf.data.mean(axis=0).astype(np.float32)
     sr = buf.sample_rate
     n = len(mono)
@@ -200,23 +224,30 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None) -> EnvelopeResu
         attack_end = sustain_start = q
         sustain_end = 3 * q
 
-    # Classify: pluck vs sustained — average RMS over a window to smooth out attack
-    # transients. The window is anchored to the sustained region, not a fixed offset past
-    # the raw peak: on short samples whose loudest RMS frame lands late (amplitude wobble
-    # on a hardware recording), peak+3s overruns the note's release into silence and a
-    # clearly-sustained note reads as a pluck. Clamp to [sustain_start, sustain_end] and,
-    # if the peak sits so late that the window collapses, measure the tail of the sustain.
     sustain_start_frame = sustain_start // _HOP
     sustain_end_frame = min(sustain_end // _HOP, len(rms))
-    win_lo = int(_PLUCK_WINDOW_START_S * sr / _HOP)
-    win_hi = int(_PLUCK_WINDOW_END_S * sr / _HOP)
-    start_frame = max(sustain_start_frame, min(peak_frame + win_lo, sustain_end_frame - 1))
-    end_frame = min(peak_frame + win_hi, sustain_end_frame)
-    if end_frame <= start_frame:
-        end_frame = sustain_end_frame
-        start_frame = max(sustain_start_frame, end_frame - win_lo)
-    avg_rms = rms[start_frame:end_frame].mean() if end_frame > start_frame else rms[max(0, end_frame - 1)]
-    if avg_rms < _PLUCK_RMS_THRESHOLD * peak_rms:
+
+    # Classify: pluck vs sustained. When the note-off position is known (rendered VST/CLAP
+    # capture) measure the level at release directly — the ground truth for "did it sustain?".
+    # For library samples there is no note-off, so fall back to averaging RMS over a window to
+    # smooth out attack transients. That window is anchored to the sustained region, not a
+    # fixed offset past the raw peak: on short samples whose loudest RMS frame lands late
+    # (amplitude wobble on a hardware recording), peak+3s overruns the note's release into
+    # silence and a clearly-sustained note reads as a pluck. Clamp to [sustain_start,
+    # sustain_end] and, if the peak sits so late that the window collapses, measure the tail.
+    if note_off is not None:
+        is_pluck = _is_pluck_at_noteoff(rms, note_off, peak_rms, sr)
+    else:
+        win_lo = int(_PLUCK_WINDOW_START_S * sr / _HOP)
+        win_hi = int(_PLUCK_WINDOW_END_S * sr / _HOP)
+        start_frame = max(sustain_start_frame, min(peak_frame + win_lo, sustain_end_frame - 1))
+        end_frame = min(peak_frame + win_hi, sustain_end_frame)
+        if end_frame <= start_frame:
+            end_frame = sustain_end_frame
+            start_frame = max(sustain_start_frame, end_frame - win_lo)
+        avg_rms = rms[start_frame:end_frame].mean() if end_frame > start_frame else rms[max(0, end_frame - 1)]
+        is_pluck = avg_rms < _PLUCK_RMS_THRESHOLD * peak_rms
+    if is_pluck:
         return EnvelopeResult(
             peak_db=peak_db,
             rms_db=rms_db,

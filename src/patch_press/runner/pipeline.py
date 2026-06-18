@@ -20,11 +20,11 @@ _EXPORTERS = {
 }
 
 
-def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1) -> Path:
+def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1, progress=None) -> Path:
     if isinstance(config.source, VSTSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = VSTAdapter(config.source)
-        sset = adapter.capture(config.capture, name=config.name or None)
+        sset = adapter.capture(config.capture, name=config.name or None, progress=progress)
         analysis = replace(
             config.analysis,
             pitch_verify=False,
@@ -33,7 +33,7 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
     elif isinstance(config.source, CLAPSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = CLAPAdapter(config.source)
-        sset = adapter.capture(config.capture, name=config.name or None)
+        sset = adapter.capture(config.capture, name=config.name or None, progress=progress)
         analysis = replace(
             config.analysis,
             pitch_verify=False,
@@ -47,6 +47,10 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             note_step=config.capture.note_step,
         )
         analysis = config.analysis
+        # Library capture reads files rather than rendering note-by-note, so advance the shared
+        # batch bar in one step by the number of samples loaded.
+        if progress is not None:
+            progress.update(len(sset.samples))
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")
 

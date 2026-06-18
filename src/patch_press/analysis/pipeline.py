@@ -56,6 +56,7 @@ def _init_worker(level: int) -> None:
     suppress_noisy_loggers()
 
 from ..config.schema import AnalysisConfig
+from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
 from .classify import classify_drum
 from .envelope import analyze_envelope
@@ -67,7 +68,7 @@ from .loop import (
 )
 from .normalize import normalize_sample, normalize_set
 from .pitch import verify_pitch
-from .trim import trim_silence
+from .trim import trim_bounds
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def _sound_type_string(analyzed: list[Sample], tempo_bpm: float | None) -> str:
 
 
 def _envelope_only(sample: Sample, bpm: float | None) -> Sample:
-    env = analyze_envelope(sample.audio, bpm=bpm)
+    env = analyze_envelope(sample.audio, bpm=bpm, note_off=sample.note_off)
     return Sample(
         note=sample.note,
         velocity=sample.velocity,
@@ -121,10 +122,15 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     audio = sample.audio
     analysis = dict(sample.analysis)
 
+    # note_off is an index into the captured audio; trimming leading silence shifts it.
+    note_off = sample.note_off
     if config.trim:
-        audio = trim_silence(audio)
+        lead, trail = trim_bounds(audio)
+        audio = AudioBuffer(data=audio.data[:, lead:trail], sample_rate=audio.sample_rate)
+        if note_off is not None:
+            note_off -= lead
 
-    env = analyze_envelope(audio, bpm=config.tempo_bpm)
+    env = analyze_envelope(audio, bpm=config.tempo_bpm, note_off=note_off)
     analysis.update(env.to_dict())
 
     if config.pitch_verify:
@@ -151,18 +157,19 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
                 break
             log.warning(f"Splice validation failed ({s}, {e}): {fail} — trying next candidate")
         if not loop_found:
-            # Guaranteed fallback for sustained notes: loop the central 50% of the sustain
-            # region. Every note in a sustained patch gets a loop — partial multisample
-            # presets are unplayable. central_fallback_loop snaps the length to whole periods
-            # and phase-locks the end so even this last resort can't phase-cancel. (Crossfade
-            # baked later, see Fix #1.)
-            if env.classification != "pluck":
-                fb = central_fallback_loop(audio, env.sustain_start, env.sustain_end, sample.note)
-                if fb is not None:
-                    loop_points = fb
-                    analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
-                    analysis["loop_warning"] = "fallback_central_region"
-                    loop_found = True
+            # Guaranteed fallback when loop is enabled: loop the central 50% of the sustain
+            # region. The config's loop flag is ground truth — if it says loop, every note
+            # gets one (partial multisample presets are unplayable), regardless of the
+            # per-sample envelope pluck classification. central_fallback_loop snaps the length
+            # to whole periods and phase-locks the end so even this last resort can't
+            # phase-cancel, and returns None only when the sustain region is physically too
+            # short to loop. (Crossfade baked later, see Fix #1.)
+            fb = central_fallback_loop(audio, env.sustain_start, env.sustain_end, sample.note)
+            if fb is not None:
+                loop_points = fb
+                analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
+                analysis["loop_warning"] = "fallback_central_region"
+                loop_found = True
             if not loop_found:
                 if loop_cands:
                     analysis["loop_quality"] = round(best_quality, 3)
@@ -221,19 +228,16 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
     sound_type = _sound_type_string(analyzed, actual_tempo)
     log.info(f"Sound type: {sound_type}")
 
-    if sound_type == "Pluck":
-        analyzed = [
-            Sample(
-                note=s.note,
-                velocity=s.velocity,
-                round_robin=s.round_robin,
-                audio=s.audio,
-                loop_points=None,
-                analysis=s.analysis,
-                metadata=s.metadata,
-            )
-            for s in analyzed
-        ]
+    # The config's loop flag is ground truth (set by the scan profile, or hand-edited). We no
+    # longer strip loops when the set votes "Pluck" — that override silently discarded loops a
+    # loop:true config asked for. Instead just warn so the user can set profile: pluck if the
+    # preset really shouldn't loop.
+    if sound_type == "Pluck" and config.loop:
+        n_pluck = sum(1 for s in analyzed if s.analysis.get("classification") == "pluck")
+        log.warning(
+            f"{n_pluck}/{len(analyzed)} samples classify as pluck but loop is enabled — "
+            f"set profile: pluck (or analysis.loop: false) if this preset should not loop."
+        )
 
     # Bake the loop crossfade now that the set-level pluck vote is final — samples whose
     # loops were just stripped keep their clean trimmed audio (Fix #1).

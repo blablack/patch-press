@@ -165,12 +165,17 @@ def scan_from_probe(
     _switching_verified = len(presets) < 2
     _prev_audio: AudioBuffer | None = None
 
-    _total_s = LONG_HOLD_S + probe_release_s
+    # Probe over the full capture duration, not a fixed 10 s. A slow-decaying pluck
+    # (e.g. Dexed "-ANALOG 1-": silent by ~15 s but held for 25 s) still has energy at
+    # 10 s, so a 10 s hold can't see it decay to silence and misreads it as sustained.
+    # Classifying over the same hold we will actually capture keeps scan and batch consistent.
+    long_hold_s = q.sustain_duration_s
+    _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
         adapter._apply_preset(preset_name)
         short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
-        long_audio = adapter.render_note(probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate)
+        long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate)
 
         if not _switching_verified:
             if _prev_audio is None:
@@ -185,8 +190,8 @@ def scan_from_probe(
                     )
                 _switching_verified = True
 
-        sustains = classify_sustain_type(short_audio, long_audio)
-        result = probe(long_audio, LONG_HOLD_S, sustains_hint=sustains)
+        sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
+        result = probe(long_audio, long_hold_s, sustains_hint=sustains)
         if result.sustains:
             result = replace(
                 result,
@@ -206,7 +211,8 @@ def scan_from_probe(
                     note=n,
                     velocity=probe_velocity,
                     round_robin=1,
-                    audio=adapter.render_note(n, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate),
+                    audio=adapter.render_note(n, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate),
+                    note_off=int(long_hold_s * sample_rate),
                 )
                 for n in _CLASSIFY_NOTES
             ]
@@ -344,15 +350,18 @@ def scan_clap(
 
     summary = ScanSummary(total=len(state_map))
     plugin_stem = plugin_path.stem
-    _total_s = LONG_HOLD_S + probe_release_s
+    # Probe over the full capture duration so slow-decaying plucks are seen to decay to
+    # silence (see scan_from_probe for the rationale).
+    long_hold_s = q.sustain_duration_s
+    _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
         adapter._apply_preset(preset_name)
         short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
-        long_audio = adapter.render_note(probe_note, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate)
+        long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate)
 
-        sustains = classify_sustain_type(short_audio, long_audio)
-        result = probe(long_audio, LONG_HOLD_S, sustains_hint=sustains)
+        sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
+        result = probe(long_audio, long_hold_s, sustains_hint=sustains)
         if result.sustains:
             result = replace(
                 result,
@@ -371,7 +380,8 @@ def scan_clap(
                     note=n,
                     velocity=probe_velocity,
                     round_robin=1,
-                    audio=adapter.render_note(n, probe_velocity, LONG_HOLD_S, _total_s, sample_rate=sample_rate),
+                    audio=adapter.render_note(n, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate),
+                    note_off=int(long_hold_s * sample_rate),
                 )
                 for n in _CLASSIFY_NOTES
             ]
