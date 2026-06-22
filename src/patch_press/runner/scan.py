@@ -4,7 +4,6 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import NamedTuple
 
 import yaml
 
@@ -22,25 +21,62 @@ from ..analysis.probe import (
 )
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
-from ..io.adapters.library import _parse_note_rr
+from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
 
 
-class _QualitySettings(NamedTuple):
-    note_step: int
-    sustain_duration_s: float
-    min_release_s: float
+# Defaults for the two independent capture axes, exposed as raw CLI params:
+#   note_step  — semitones between sampled notes (1 = every semitone = most notes)
+#   duration_s — hold length in seconds per note
+# These two were formerly bundled into a single --quality knob, which wrongly assumed
+# sample memory and slot count scale together; different samplers pinch different axes.
+DEFAULT_NOTE_STEP = 3
+DEFAULT_DURATION_S = 15.0
+
+# Sampled note range (inclusive), as a sensible default for melodic content. C4 = MIDI 60,
+# so C1 = 24, C6 = 84. Overridable per scan via --start-note / --end-note.
+DEFAULT_START_NOTE = 24  # C1
+DEFAULT_END_NOTE = 84  # C6
+
+_NOTE_NAME_RE = re.compile(r"^([A-Ga-g])(#|b)?(-?\d+)$")
 
 
-QUALITY: dict[str, _QualitySettings] = {
-    "low": _QualitySettings(note_step=12, sustain_duration_s=5.0, min_release_s=2.0),
-    "medium": _QualitySettings(note_step=3, sustain_duration_s=15.0, min_release_s=4.0),
-    "high": _QualitySettings(note_step=1, sustain_duration_s=25.0, min_release_s=6.0),
-}
+def note_name_to_midi(name: str) -> int:
+    """Parse a note name like 'C1', 'F#3', 'Bb2' to a MIDI number (C4 = 60)."""
+    m = _NOTE_NAME_RE.match(name.strip())
+    if not m:
+        raise ValueError(f"invalid note name {name!r} (expected e.g. C1, F#3, A0)")
+    letter, accidental, octave = m.group(1).upper(), m.group(2), int(m.group(3))
+    semi = _NOTE_NAMES.index(letter)
+    if accidental == "#":
+        semi += 1
+    elif accidental == "b":
+        semi -= 1
+    midi = semi + (octave + 1) * 12
+    if not 0 <= midi <= 127:
+        raise ValueError(f"note {name!r} is out of MIDI range 0..127")
+    return midi
 
-QUALITY_CHOICES = list(QUALITY)
+
+def _min_release_s(duration_s: float) -> float:
+    """Floor on the release tail for a sustaining preset, derived from the hold length."""
+    return max(2.0, duration_s * 0.25)
+
+
+def _validate_capture_params(
+    note_step: int, duration_s: float | None, note_lo: int, note_hi: int
+) -> None:
+    """Backstop guards for capture params (the CLI validates too, but protect API callers)."""
+    if note_step < 1:
+        raise ValueError(f"note_step must be >= 1, got {note_step}")
+    if duration_s is not None and duration_s <= 0:
+        raise ValueError(f"duration must be > 0, got {duration_s}")
+    if not 0 <= note_lo <= 127 or not 0 <= note_hi <= 127:
+        raise ValueError(f"note range [{note_lo}, {note_hi}] outside MIDI 0..127")
+    if note_lo >= note_hi:
+        raise ValueError(f"start note ({note_lo}) must be below end note ({note_hi})")
 
 
 @dataclass
@@ -75,6 +111,8 @@ def _write_config(
     plugin_stem: str,
     profile: str,
     note_step: int,
+    note_lo: int,
+    note_hi: int,
     raw_state: str | None = None,
     sample_rate: int = 48000,
 ) -> Path:
@@ -86,6 +124,8 @@ def _write_config(
     meta += f" sustains={'yes' if result.sustains else 'no'}"
     meta += f" release={result.release_tail_s:.1f}s"
 
+    # Drums keep the profile's full-kit range; start/end-note is a melodic concept.
+    note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
     sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
     raw_state_line = f'  raw_state: "{raw_state}"\n' if raw_state else ""
@@ -102,6 +142,7 @@ def _write_config(
         f"\n"
         f"capture:\n"
         f"{sample_rate_line}"
+        f"{note_range_line}"
         f"{note_step_line}"
         f"  duration_s: {result.duration_s}\n"
         f"  release_tail_s: {result.release_tail_s}\n"
@@ -133,12 +174,15 @@ def scan_from_probe(
     probe_note: int = 60,
     probe_velocity: int = 100,
     probe_release_s: float = 4.0,
-    quality: str = "medium",
+    note_step: int = DEFAULT_NOTE_STEP,
+    sustain_duration_s: float = DEFAULT_DURATION_S,
+    note_lo: int = DEFAULT_START_NOTE,
+    note_hi: int = DEFAULT_END_NOTE,
     debug: bool = False,
     sample_rate: int = 48000,
     tempo_bpm: float = 120.0,
 ) -> ScanSummary:
-    q = QUALITY[quality]
+    _validate_capture_params(note_step, sustain_duration_s, note_lo, note_hi)
     config_dir.mkdir(parents=True, exist_ok=True)
 
     state_map: dict[str, VSTSourceConfig] = {}
@@ -169,7 +213,7 @@ def scan_from_probe(
     # (e.g. Dexed "-ANALOG 1-": silent by ~15 s but held for 25 s) still has energy at
     # 10 s, so a 10 s hold can't see it decay to silence and misreads it as sustained.
     # Classifying over the same hold we will actually capture keeps scan and batch consistent.
-    long_hold_s = q.sustain_duration_s
+    long_hold_s = sustain_duration_s
     _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
@@ -195,8 +239,8 @@ def scan_from_probe(
         if result.sustains:
             result = replace(
                 result,
-                duration_s=q.sustain_duration_s,
-                release_tail_s=max(result.release_tail_s, q.min_release_s),
+                duration_s=sustain_duration_s,
+                release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
             )
 
         if profile is not None:
@@ -227,7 +271,9 @@ def scan_from_probe(
             config_dir,
             plugin_stem,
             preset_profile,
-            q.note_step,
+            note_step,
+            note_lo,
+            note_hi,
             raw_state=state_map[preset_name].raw_state,
             sample_rate=sample_rate,
         )
@@ -247,6 +293,8 @@ def _write_clap_config(
     config_dir: Path,
     profile: str,
     note_step: int,
+    note_lo: int,
+    note_hi: int,
     sample_rate: int = 48000,
 ) -> Path:
     safe_name = _sanitize(preset_name)
@@ -254,6 +302,7 @@ def _write_clap_config(
     meta = f"confidence={result.confidence}"
     meta += f" sustains={'yes' if result.sustains else 'no'}"
     meta += f" release={result.release_tail_s:.1f}s"
+    note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
     sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
     content = (
@@ -270,6 +319,7 @@ def _write_clap_config(
         f"\n"
         f"capture:\n"
         f"{sample_rate_line}"
+        f"{note_range_line}"
         f"{note_step_line}"
         f"  duration_s: {result.duration_s}\n"
         f"  release_tail_s: {result.release_tail_s}\n"
@@ -290,7 +340,10 @@ def scan_clap(
     probe_note: int = 60,
     probe_velocity: int = 100,
     probe_release_s: float = 4.0,
-    quality: str = "medium",
+    note_step: int = DEFAULT_NOTE_STEP,
+    sustain_duration_s: float = DEFAULT_DURATION_S,
+    note_lo: int = DEFAULT_START_NOTE,
+    note_hi: int = DEFAULT_END_NOTE,
     debug: bool = False,
     sample_rate: int = 48000,
     tempo_bpm: float = 120.0,
@@ -305,7 +358,7 @@ def scan_clap(
     except ImportError:
         raise RuntimeError("patch_render extension required for CLAP scanning")
 
-    q = QUALITY[quality]
+    _validate_capture_params(note_step, sustain_duration_s, note_lo, note_hi)
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # Discover plugin ID from the .clap file
@@ -352,7 +405,7 @@ def scan_clap(
     plugin_stem = plugin_path.stem
     # Probe over the full capture duration so slow-decaying plucks are seen to decay to
     # silence (see scan_from_probe for the rationale).
-    long_hold_s = q.sustain_duration_s
+    long_hold_s = sustain_duration_s
     _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
@@ -365,8 +418,8 @@ def scan_clap(
         if result.sustains:
             result = replace(
                 result,
-                duration_s=q.sustain_duration_s,
-                release_tail_s=max(result.release_tail_s, q.min_release_s),
+                duration_s=sustain_duration_s,
+                release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
             )
 
         if profile is not None:
@@ -398,7 +451,9 @@ def scan_clap(
             result,
             config_dir,
             preset_profile,
-            q.note_step,
+            note_step,
+            note_lo,
+            note_hi,
             sample_rate=sample_rate,
         )
         summary.written.append(path)
@@ -458,10 +513,12 @@ def scan_library(
     config_dir: Path,
     library_type: str,
     profile: str | None = None,
-    quality: str = "medium",
+    note_step: int = DEFAULT_NOTE_STEP,
+    note_lo: int = DEFAULT_START_NOTE,
+    note_hi: int = DEFAULT_END_NOTE,
     debug: bool = False,
 ) -> ScanSummary:
-    q = QUALITY[quality]
+    _validate_capture_params(note_step, None, note_lo, note_hi)
     config_dir.mkdir(parents=True, exist_ok=True)
     library_stem = _sanitize(library_path.name)
 
@@ -476,7 +533,11 @@ def scan_library(
         tqdm.write(f"  {subfolder.name} → {folder_profile}")
         safe_name = _sanitize(subfolder.name)
 
-        capture_block = "" if folder_profile == "drums" else f"\ncapture:\n  note_step: {q.note_step}\n"
+        capture_block = (
+            ""
+            if folder_profile == "drums"
+            else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
+        )
         content = (
             f"source:\n"
             f"  type: library\n"

@@ -1,11 +1,11 @@
 # files
-debug_*
-audition_preset.sh
+*.log
 
 # folders
 __pycache__
 .venv
-.claude/
+.claude
+debug_scripts
 
 output
 input

@@ -18,24 +18,31 @@ Two modes:
 
 What the columns mean (all measured at the on-device wrap mono[end-1] -> mono[start]):
 
-  amp_disc   value step at the wrap / peak       — the click. Same metric & threshold
-             as the pipeline's validate_splice_reason (>= 0.25 fails -> CLICK).
+  disc_x     wrap step / local p90 |diff| — the click, RELATIVE to the waveform's own
+             per-sample steps (>= 6x and above a noise floor -> CLICK).
   deriv_disc forward-slope mismatch across wrap   — phase/shape kink (>= 0.50 fails -> CLICK).
-  lvl_step   |level(start) - level(end)| / louder side, 0..1 — INFORMATIONAL.
+  amp_disc   raw |step|/peak at the wrap          — INFORMATIONAL (misleading at high pitch).
+  drift      seam amp-drift (the once-per-loop level pump), the pipeline's own _amp_drift at the
+             wrap — INFORMATIONAL. The quantity find_loop_candidates minimises among long loops.
   spec_disc  spectral cosine distance start vs end — INFORMATIONAL.
   len_s      loop length in seconds               — you want these LONG for evolving synths.
 
-Only an instantaneous discontinuity (amp/deriv) is an objective defect — it clicks on any
-sound. lvl_step and spec_disc are deliberately NOT verdicts: a long loop on an evolving /
-decaying synth legitimately spans a level and timbre change (the whole point of a long
-loop), so flagging those would cry wolf on exactly the loops you want. They're shown so you
-(or the model) can spot an outlier worth auditioning by ear with tools/loop_audition.py.
-Very short len_s on a sustained synth is also worth a look — that's the short-loop bug.
+The click test is RELATIVE: at high pitch a continuous wrap has a near-full-scale single-
+sample step (amp_disc ~1.0) that is NOT a click — it just matches the waveform's own steps.
+disc_x compares the wrap step to the local p90 |diff|, so only a step that is an outlier vs
+the surrounding waveform flags. amp_disc/drift/spec_disc are deliberately NOT verdicts:
+amp_disc is the old false-positive, and a long loop on an evolving/decaying synth legitimately
+spans level and timbre changes (the point of a long loop). drift (the seam level pump) is the
+quantity the ranker now minimises among long loops, so it is the column to watch when comparing
+renders before/after a loop-selection change — but it is informational, not a hard fail. They're
+shown so you (or the model) can spot an outlier worth auditioning by ear with
+tools/loop_audition.py. Very short len_s on a sustained synth is also worth a look — the
+short-loop bug.
 
 NOTE on rendered output: the exported WAV already has patch-press's loop crossfade baked
 in, which is exactly what the Deluge plays (the device itself does no crossfade). So
 amp_disc/deriv_disc here are the *real* on-device seam — a large value means the bake
-failed to hide a genuine click. rms_step/spec_disc are measured just outside the crossfade
+failed to hide a genuine click. drift/spec_disc are measured at/just outside the crossfade
 window, so they expose pumping/timbre drift the bake cannot mask. In --wav mode the audio
 is raw, so the numbers are the intrinsic splice quality (what validate_splice_reason gates).
 """
@@ -54,11 +61,14 @@ from patch_press.analysis.loop import (  # noqa: E402
     _AMP_DISC_THRESHOLD,
     _DERIV_DISC_THRESHOLD,
     _SLOPE_WINDOW,
+    _amp_drift,
     _seam_slopes,
 )
 
 _GUARD_MS = 25.0               # skip this much each side of the wrap (past the baked crossfade)
 _WIN_MS = 50.0                 # window for the level/spectral comparison
+_DISC_RATIO_THRESHOLD = 6.0    # wrap step this many x the local p90 |diff| = a real click
+_WRAP_STEP_FLOOR = 0.05        # ignore tiny wrap steps (noise) regardless of ratio (fraction of peak)
 
 
 def _resolve_wav(xml_path: Path, file_name: str) -> Path:
@@ -101,31 +111,50 @@ def measure(mono: np.ndarray, sr: int, start: int, end: int) -> dict | None:
     s_start, s_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
     deriv_disc = abs(s_end - s_start) / (2.0 * peak)
 
+    # Click test, RELATIVE to the waveform's own sample-to-sample step. The absolute amp_disc
+    # is meaningless at high pitch: a ~9-sample period swings full-scale every sample, so a
+    # perfectly continuous wrap reads ~1.0. What actually clicks is a step at the wrap that is
+    # an OUTLIER versus the natural per-sample steps right next to the seam. wrap_step is the
+    # played step at the on-device wrap (mono[end-1] -> mono[start]); compare it to the 90th-
+    # percentile |diff| of the local waveform on both sides.
+    wrap_step = abs(float(mono[end - 1]) - float(mono[start]))
+    lw = min(256, max(8, (end - start) // 4))
+    local = np.concatenate([np.abs(np.diff(mono[start : start + lw])),
+                            np.abs(np.diff(mono[end - lw : end]))])
+    local_step = float(np.percentile(local, 90)) if len(local) else 0.0
+    disc_ratio = wrap_step / (local_step + 1e-9)
+
+    # Seam amplitude drift — the once-per-loop level pump. Measured with the pipeline's own
+    # _amp_drift (the exact quantity find_loop_candidates now optimises in its evolving branch),
+    # at the windows that abut the wrap (mono[end-win:end] vs mono[start:start+win]), so the
+    # number matches the ranker. This replaces the old lvl_step, which sampled 25-75ms OFF the
+    # seam and therefore read a tremolo-phase artifact (e.g. equal seam levels reported as 0.97).
     guard = int(_GUARD_MS * sr / 1000)
     win = int(_WIN_MS * sr / 1000)
     body = end - start
-    win = min(win, max(8, body // 2 - guard))
-    lvl_step = spec_disc = 0.0
+    win = min(win, max(8, body // 2))
+    drift = _amp_drift(mono, start, end, win, peak)
+    spec_disc = 0.0
     if win >= 8 and start + guard + win <= end - guard and end - guard - win >= start:
         post = mono[start + guard : start + guard + win]
         pre = mono[end - guard - win : end - guard]
-        r_post = float(np.sqrt(np.mean(post ** 2)))
-        r_pre = float(np.sqrt(np.mean(pre ** 2)))
-        louder = max(r_post, r_pre, 1e-9)
-        lvl_step = abs(r_pre - r_post) / louder  # 0 = same level, ->1 = one side near silent
         w = np.hanning(len(post))
         mp = np.abs(np.fft.rfft(post * w))
         me = np.abs(np.fft.rfft(pre * w))
         spec_disc = _cos_dist(mp, me)
 
-    # Only an instantaneous discontinuity is an objective defect (it clicks on any sound).
-    # lvl_step / spec_disc are informational — a long loop on an evolving synth spans them
-    # by design, so they must not flip the verdict.
-    verdict = "CLICK" if (amp_disc >= _AMP_DISC_THRESHOLD or deriv_disc >= _DERIV_DISC_THRESHOLD) else "ok"
-    severity = max(amp_disc / _AMP_DISC_THRESHOLD, deriv_disc / _DERIV_DISC_THRESHOLD)
+    # Only an instantaneous discontinuity that is an OUTLIER vs the local waveform is an
+    # objective defect (it clicks on any sound). disc_ratio guards against the high-note false
+    # positive; the noise floor stops it firing on near-silent seams; deriv_disc stays as the
+    # phase/slope gate. amp_disc/lvl_step/spec_disc are informational (a long loop on an
+    # evolving synth spans level/timbre by design, so they must not flip the verdict).
+    is_click = (disc_ratio >= _DISC_RATIO_THRESHOLD and wrap_step >= _WRAP_STEP_FLOOR * peak) \
+        or deriv_disc >= _DERIV_DISC_THRESHOLD
+    verdict = "CLICK" if is_click else "ok"
+    severity = max(disc_ratio / _DISC_RATIO_THRESHOLD, deriv_disc / _DERIV_DISC_THRESHOLD)
     return {
-        "len_s": body / sr, "amp_disc": amp_disc, "deriv_disc": deriv_disc,
-        "lvl_step": lvl_step, "spec_disc": spec_disc,
+        "len_s": body / sr, "disc_ratio": disc_ratio, "deriv_disc": deriv_disc,
+        "amp_disc": amp_disc, "drift": drift, "spec_disc": spec_disc,
         "verdict": verdict, "severity": severity,
     }
 
@@ -189,13 +218,13 @@ def main() -> None:
     if args.top:
         shown = shown[: args.top]
 
-    hdr = f"{'PRESET':<22} {'NOTE/ZONE':<26} {'len_s':>6} {'amp':>6} {'deriv':>6} {'lvl':>5} {'spec':>5}  VERDICT"
+    hdr = f"{'PRESET':<22} {'NOTE/ZONE':<26} {'len_s':>6} {'disc_x':>6} {'deriv':>6} {'amp':>5} {'drift':>5} {'spec':>5}  VERDICT"
     print(hdr)
     print("-" * len(hdr))
     for preset, label, m in shown:
         print(
-            f"{preset[:22]:<22} {label[:26]:<26} {m['len_s']:>6.2f} {m['amp_disc']:>6.3f} "
-            f"{m['deriv_disc']:>6.3f} {m['lvl_step']:>5.2f} {m['spec_disc']:>5.2f}  {m['verdict']}"
+            f"{preset[:22]:<22} {label[:26]:<26} {m['len_s']:>6.2f} {m['disc_ratio']:>6.2f} "
+            f"{m['deriv_disc']:>6.3f} {m['amp_disc']:>5.2f} {m['drift']:>5.2f} {m['spec_disc']:>5.2f}  {m['verdict']}"
         )
 
     from collections import Counter

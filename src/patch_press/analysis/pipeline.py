@@ -61,6 +61,7 @@ from ..model.sample import Category, Sample, SampleSet
 from .classify import classify_drum
 from .envelope import analyze_envelope
 from .loop import (
+    _MIN_LOOP_RANK_S,
     bake_loop_crossfade,
     central_fallback_loop,
     find_loop_candidates,
@@ -156,7 +157,13 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
                 loop_found = True
                 break
             log.warning(f"Splice validation failed ({s}, {e}): {fail} — trying next candidate")
-        if not loop_found:
+        # A validated candidate shorter than the ranking floor is a micro-loop — a high note
+        # with a short sustain can yield only a tiny clean candidate (e.g. 0.1s on a 1.3s
+        # sustain), which sounds worse than a longer loop. Fall through to the central fallback
+        # whenever no long-enough candidate was found, and adopt it only if it is genuinely
+        # longer than whatever we have.
+        chosen_len = (loop_points[1] - loop_points[0]) if loop_found and loop_points else 0
+        if not loop_found or chosen_len < _MIN_LOOP_RANK_S * audio.sample_rate:
             # Guaranteed fallback when loop is enabled: loop the central 50% of the sustain
             # region. The config's loop flag is ground truth — if it says loop, every note
             # gets one (partial multisample presets are unplayable), regardless of the
@@ -165,7 +172,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
             # phase-cancel, and returns None only when the sustain region is physically too
             # short to loop. (Crossfade baked later, see Fix #1.)
             fb = central_fallback_loop(audio, env.sustain_start, env.sustain_end, sample.note)
-            if fb is not None:
+            if fb is not None and (fb[1] - fb[0]) > chosen_len:
                 loop_points = fb
                 analysis["loop_quality"] = round(best_quality, 3) if loop_cands else 0.0
                 analysis["loop_warning"] = "fallback_central_region"

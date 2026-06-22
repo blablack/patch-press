@@ -22,7 +22,37 @@ from ..profiles import available_profiles
 from ..runner.batch import run_batch
 from ..runner.pipeline import classify as classify_run
 from ..runner.pipeline import run
-from ..runner.scan import QUALITY_CHOICES, scan_clap, scan_from_probe, scan_library
+from ..runner.scan import (
+    DEFAULT_DURATION_S,
+    DEFAULT_END_NOTE,
+    DEFAULT_NOTE_STEP,
+    DEFAULT_START_NOTE,
+    note_name_to_midi,
+    scan_clap,
+    scan_from_probe,
+    scan_library,
+)
+
+
+def _note_step_arg(s: str) -> int:
+    v = int(s)
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
+    return v
+
+
+def _duration_arg(s: str) -> float:
+    v = float(s)
+    if v <= 0:
+        raise argparse.ArgumentTypeError(f"must be > 0, got {v}")
+    return v
+
+
+def _note_arg(s: str) -> int:
+    try:
+        return note_name_to_midi(s)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 def cmd_sample(args: argparse.Namespace) -> None:
@@ -68,7 +98,10 @@ def cmd_scan_from_probe(args: argparse.Namespace) -> None:
         profile=args.profile,
         probe_note=args.probe_note,
         probe_velocity=args.probe_velocity,
-        quality=args.quality,
+        note_step=args.note_step,
+        sustain_duration_s=args.duration,
+        note_lo=args.start_note,
+        note_hi=args.end_note,
         debug=args.debug,
         sample_rate=args.sample_rate,
         tempo_bpm=args.tempo_bpm,
@@ -95,7 +128,10 @@ def cmd_scan_clap(args: argparse.Namespace) -> None:
         profile=args.profile,
         probe_note=args.probe_note,
         probe_velocity=args.probe_velocity,
-        quality=args.quality,
+        note_step=args.note_step,
+        sustain_duration_s=args.duration,
+        note_lo=args.start_note,
+        note_hi=args.end_note,
         debug=args.debug,
         sample_rate=args.sample_rate,
         tempo_bpm=args.tempo_bpm,
@@ -114,7 +150,9 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
         config_dir=args.config_dir,
         library_type=args.type,
         profile=args.profile,
-        quality=args.quality,
+        note_step=args.note_step,
+        note_lo=args.start_note,
+        note_hi=args.end_note,
         debug=args.debug,
     )
     print(
@@ -266,10 +304,30 @@ def main() -> None:
     scan_probe_p.add_argument("--probe-note", type=int, default=60, metavar="MIDI")
     scan_probe_p.add_argument("--probe-velocity", type=int, default=100, metavar="VEL")
     scan_probe_p.add_argument(
-        "--quality",
-        choices=QUALITY_CHOICES,
-        default="medium",
-        help="Sampling quality: controls note step and capture duration (default: medium)",
+        "--note-step",
+        type=_note_step_arg,
+        default=DEFAULT_NOTE_STEP,
+        help=f"Semitones between sampled notes (1=every semitone; default: {DEFAULT_NOTE_STEP})",
+    )
+    scan_probe_p.add_argument(
+        "--duration",
+        type=_duration_arg,
+        default=DEFAULT_DURATION_S,
+        help=f"Hold length in seconds per note (default: {DEFAULT_DURATION_S})",
+    )
+    scan_probe_p.add_argument(
+        "--start-note",
+        type=_note_arg,
+        default="C1",
+        metavar="NOTE",
+        help="Lowest note to sample, e.g. C1 or A0 (default: C1)",
+    )
+    scan_probe_p.add_argument(
+        "--end-note",
+        type=_note_arg,
+        default="C6",
+        metavar="NOTE",
+        help="Highest note to sample, e.g. C6 or C8 (default: C6)",
     )
 
     # patch-press scan-clap Plugin.clap ~/presets/Plugin configs/Plugin
@@ -308,10 +366,30 @@ def main() -> None:
     scan_clap_p.add_argument("--probe-note", type=int, default=60, metavar="MIDI")
     scan_clap_p.add_argument("--probe-velocity", type=int, default=100, metavar="VEL")
     scan_clap_p.add_argument(
-        "--quality",
-        choices=QUALITY_CHOICES,
-        default="medium",
-        help="Sampling quality: controls note step and capture duration (default: medium)",
+        "--note-step",
+        type=_note_step_arg,
+        default=DEFAULT_NOTE_STEP,
+        help=f"Semitones between sampled notes (1=every semitone; default: {DEFAULT_NOTE_STEP})",
+    )
+    scan_clap_p.add_argument(
+        "--duration",
+        type=_duration_arg,
+        default=DEFAULT_DURATION_S,
+        help=f"Hold length in seconds per note (default: {DEFAULT_DURATION_S})",
+    )
+    scan_clap_p.add_argument(
+        "--start-note",
+        type=_note_arg,
+        default="C1",
+        metavar="NOTE",
+        help="Lowest note to sample, e.g. C1 or A0 (default: C1)",
+    )
+    scan_clap_p.add_argument(
+        "--end-note",
+        type=_note_arg,
+        default="C6",
+        metavar="NOTE",
+        help="Highest note to sample, e.g. C6 or C8 (default: C6)",
     )
 
     # patch-press scan-library "Mini From Mars" configs/Mini
@@ -339,10 +417,24 @@ def main() -> None:
         help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
     )
     scan_lib_p.add_argument(
-        "--quality",
-        choices=QUALITY_CHOICES,
-        default="medium",
-        help="Sampling quality: controls note step (default: medium)",
+        "--note-step",
+        type=_note_step_arg,
+        default=DEFAULT_NOTE_STEP,
+        help=f"Semitones between sampled notes (1=every semitone; default: {DEFAULT_NOTE_STEP})",
+    )
+    scan_lib_p.add_argument(
+        "--start-note",
+        type=_note_arg,
+        default="C1",
+        metavar="NOTE",
+        help="Lowest note to sample, e.g. C1 or A0 (default: C1)",
+    )
+    scan_lib_p.add_argument(
+        "--end-note",
+        type=_note_arg,
+        default="C6",
+        metavar="NOTE",
+        help="Highest note to sample, e.g. C6 or C8 (default: C6)",
     )
 
     # patch-press classify configs/*.yaml
@@ -369,6 +461,10 @@ def main() -> None:
     sub.add_parser("profiles", help="List available profiles")
 
     args = parser.parse_args()
+
+    if args.command in ("scan-from-probe", "scan-clap", "scan-library"):
+        if args.start_note >= args.end_note:
+            parser.error("--start-note must be below --end-note")
 
     logging.basicConfig(
         level=(

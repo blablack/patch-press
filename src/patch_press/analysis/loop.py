@@ -49,15 +49,22 @@ _TEMPO_SUBDIVISIONS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0]
 # period count: a high note can span hundreds of cycles in a few milliseconds.
 _LOOP_LEN_TARGET_S = 1.5   # loops at/above this length earn the full length reward
 _W_LENGTH = 0.15           # weight of the length reward
+# Ranking length floor. A short pitch-locked loop trivially matches its own seam (near-perfect
+# base score), which the additive length reward (max +_W_LENGTH) cannot overcome, so a 0.1s
+# loop can outrank a 6.5s one on a multi-second sustain. Gate out sub-floor loops when any
+# longer loop survives the other gates; never wipe — a genuinely short sustain keeps its short
+# loops and the length reward still picks the longest available.
+_MIN_LOOP_RANK_S = 1.0
 # Whole-loop drift control (replaces the old RMS-only placement term). The seam can match
 # perfectly while the tone still drifts ACROSS the loop, so each wrap jumps — a per-loop
 # wobble. amp_drift compares the positive AND negative peak of the post-wrap window to the
 # pre-wrap window (RMS is blind to a constant-RMS asymmetry drift; peaks are not).
 #
-# amp_drift is a GATE, not a weak additive penalty: drift magnitudes are small (a few percent),
-# so at any sane additive weight the length reward swamps them. Like _SEAM_GATE it filters the
-# pool so the length reward then picks the longest *stationary* loop; self-targeting (a static
-# sound drifts ~0 at every length, so all survive and a long loop still wins) and never wipes.
+# For STEADY sounds amp_drift is a GATE, not a weak additive penalty: drift magnitudes are small
+# (a few percent), so at any sane additive weight the length reward swamps them. Like _SEAM_GATE
+# it filters the pool so the length reward then picks the longest *stationary* loop; self-targeting
+# (a static sound drifts ~0 at every length, so all survive and a long loop still wins) and never
+# wipes.
 _DRIFT_GATE = 0.025        # max peak/asymmetry drift across the wrap before a loop is gated out
 # The drift gate only engages for sounds that are SUPPOSED to be steady. If the peak envelope
 # swings more than this across the sustain (a swell/decay/reverse lead), the sound genuinely
@@ -68,12 +75,33 @@ _DRIFT_GATE_MAX_MOVE = 0.25
 # timbre is the same end→start chroma already computed for the seam, reused for free; a light
 # additive penalty (the endpoint form keeps a legitimate whole-cycle pad loop unpenalised).
 _W_TIMBRE_DRIFT = 0.10     # weight of the timbre (chroma) drift penalty in ranking
+# For EVOLVING sounds the steady drift gate stands down (no sub-loop is flat), so it cannot help.
+# But the same amp_drift still tells phase-aligned from mis-aligned long loops: a loop whose
+# length is ~k*(modulation period) is envelope-continuous at the wrap (low amp_drift), a
+# mis-aligned one pumps once per loop. Here an ADDITIVE penalty IS viable — the length reward
+# saturates at _LOOP_LEN_TARGET_S, so above that all candidates tie on length and there is nothing
+# left to swamp the penalty; it only arbitrates AMONG long loops, picking the period-aligned one
+# without collapsing to a short flat loop. Applied only when not steady (steady keeps the gate).
+_W_AMP_DRIFT = 0.20        # weight of the seam amp-drift penalty in the evolving branch
+_AMP_DRIFT_NORM = 0.15     # amp_drift (fraction of peak) that saturates the penalty
 _SEAM_GATE = 0.20          # max waveform mismatch (normalised RMS) between the loop start and
                            # end windows. Self-targeting: static sounds match at any length so
                            # every candidate passes and the length reward still picks a long loop;
                            # only loops that wrap across a real phase/timbre change (the cause of
                            # the mid-crossfade dip) are gated out, forcing a shorter clean loop.
                            # Never wipes the pool — if all exceed it, the cleanest seam is kept.
+
+
+# Direct period-aligned loop. The chroma/tempo candidate sources propose beat-synced lengths
+# that wrap mid-modulation (audible pumping even with a clean seam crossfade). The fix is to
+# lock the loop length to the signal's TRUE repeat period, found by minimising the raw seam
+# mismatch (waveform continuity with NO crossfade) over candidate lengths. Verified by ear on
+# Dexed FM pads (BANKS, T.): period-aligned loops score raw mismatch ~0.04–0.10 vs ~0.33–0.41
+# for the beat-synced ones, and need no crossfade.
+_PERIOD_ALIGN_MAX_MISMATCH = 0.15   # raw seam mismatch below which an aligned loop is "clean"
+_PERIOD_TARGET_MAX_S = 6.0          # prefer the longest clean period-multiple up to this length
+_PERIOD_SEARCH_MIN_S = 0.30         # shortest loop period to consider
+_PERIOD_SEARCH_MAX_S = 3.00         # longest base period to consider (multiples extend it)
 
 
 def _rms_envelope(mono: np.ndarray, hop: int) -> np.ndarray:
@@ -613,6 +641,93 @@ def _seam_disc(mono: np.ndarray, start: int, end: int) -> tuple[float, float]:
     return amp_disc, deriv_disc
 
 
+def _period_aligned_loop(
+    mono: np.ndarray, sr: int, region_start: int, region_end: int, carrier: int | None
+) -> tuple[int, int, float] | None:
+    """Loop whose length is an integer multiple of the signal's true repeat period.
+
+    Found by minimising the raw seam mismatch (no crossfade) over candidate lengths, locked to
+    the carrier. Returns (loop_start, loop_end, raw_mismatch) for the LONGEST clean multiple up
+    to _PERIOD_TARGET_MAX_S, or None when no clean loop exists (genuinely aperiodic notes — they
+    fall through to the existing candidate machinery).
+
+    The raw mismatch compares the W samples before loop_end with the W before loop_start: a
+    period-aligned length matches (envelope-continuous wrap), a beat-synced one does not. W ≈ two
+    carrier periods so the measure reflects waveform continuity at the note's pitch.
+    """
+    n = len(mono)
+    t_wave = carrier if (carrier and carrier > 0) else int(sr / 440)
+    W = max(512, 2 * t_wave)
+    lo = int(_PERIOD_SEARCH_MIN_S * sr)
+    target_max = int(_PERIOD_TARGET_MAX_S * sr)
+
+    def _search(ls: int, off_lo: int, off_hi: int) -> tuple[int, float] | None:
+        """Full-resolution min raw mismatch for loop_end in [ls+off_lo, ls+off_hi].
+
+        The mismatch minimum is needle-sharp (it needs sample-accurate carrier-phase alignment),
+        so a strided search steps over it. Compute the whole curve cheaply via cross-correlation:
+        ||x[e-W:e]-pre||^2 = E_win(e) - 2·(x⋆pre)(e) + E_pre, with E_win from a cumulative sum.
+        """
+        lo_i, hi_i = ls + off_lo, ls + off_hi
+        if hi_i <= lo_i or lo_i - W < 0 or hi_i > n:
+            return None
+        pre = mono[ls - W : ls]
+        pre_e = float(np.dot(pre, pre))
+        if pre_e <= 0:
+            return None
+        seg = mono[lo_i - W : hi_i]
+        cross = np.correlate(seg, pre, mode="valid")
+        csq = np.concatenate(([0.0], np.cumsum(seg * seg)))
+        win_e = csq[W:] - csq[:-W]
+        m = min(len(cross), len(win_e))
+        dist = np.sqrt(np.maximum(win_e[:m] - 2.0 * cross[:m] + pre_e, 0.0)) / np.sqrt(pre_e)
+        bi = int(np.argmin(dist))
+        return lo_i + bi, float(dist[bi])
+
+    def _aligned_at(ls: int) -> tuple[int, int, float] | None:
+        """Best period-aligned loop anchored at a given loop_start."""
+        base = _search(ls, lo, min(int(_PERIOD_SEARCH_MAX_S * sr), region_end - W - ls))
+        if base is None:
+            return None
+        base_end, base_mm = base
+        period = base_end - ls
+        if period <= 0:
+            return None
+        # Among in-phase multiples up to the target length, take the longest that stays clean
+        # (a couple of cycles sound less mechanical than one; a multiple drifted out of phase —
+        # the high notes — has rising mismatch and is rejected back to the base).
+        tol = max(1.5 * base_mm, base_mm + 0.05)
+        best_end, best_mm = base_end, base_mm
+        for k in range(2, 6):
+            if k * period > target_max:
+                break
+            band = max(W, period // 8)
+            sub = _search(ls, k * period - band, k * period + band)
+            if sub and sub[1] <= tol and sub[0] < region_end - W:
+                best_end, best_mm = sub
+        return ls, best_end, best_mm
+
+    # Scan several anchors through the sustain: sustain_start sits right after the attack where the
+    # tone is still settling and never aligns; a few % in it locks cleanly. Each anchor is snapped
+    # to a same-direction zero crossing so the wrap value matches.
+    results: list[tuple[int, int, float]] = []
+    for frac in (0.10, 0.15, 0.20, 0.30, 0.40):
+        anchor = max(region_start + int(frac * (region_end - region_start)), W + 1)
+        rising = float(mono[min(anchor + 4, n - 1)]) > float(mono[max(anchor - 4, 0)])
+        ls = _snap_to_slope_zero_crossing(mono, anchor, rising, max(_ZC_SNAP_RADIUS, t_wave // 2))
+        r = _aligned_at(ls)
+        if r is not None:
+            results.append(r)
+
+    clean = [r for r in results if r[2] <= _PERIOD_ALIGN_MAX_MISMATCH]
+    if not clean:
+        return None
+    # Cleanest wins; break near-ties (within tolerance) toward the longer loop.
+    best_mm = min(r[2] for r in clean)
+    near = [r for r in clean if r[2] <= max(best_mm + 0.05, best_mm * 1.5)]
+    return max(near, key=lambda r: r[1] - r[0])
+
+
 def find_loop_candidates(
     buf: AudioBuffer,
     quality_threshold: float = 0.8,
@@ -686,6 +801,11 @@ def find_loop_candidates(
     if tempo_bpm is not None:
         for s, e in _tempo_candidates(sr, tempo_bpm, region_start, region_end):
             raw.append((s, e, 0.0, "tempo"))
+
+    # Direct period-aligned loop — the lever for the audible loop pumping. Computed up front so a
+    # clean aligned loop can be offered ahead of the beat-synced candidates below (prepended at
+    # result construction). None for aperiodic notes, which keep the existing behaviour.
+    aligned = _period_aligned_loop(mono, sr, region_start, region_end, t_wave or hint_period)
 
     # Constrain to modulation period multiples; fall back to unconstrained if it wipes all.
     # Two-sided tolerance: a length just *below* a multiple (e.g. 1.95·t_mod) is as valid
@@ -771,10 +891,11 @@ def find_loop_candidates(
     # Rank passing candidates by a length reward and the timbre-drift penalty, so the first pick
     # is a long loop on a timbrally-stable span. amp_drift is applied as a gate below, not here.
     # The returned score stays the base quality score.
-    def _rank(score: float, chroma: float, length: int) -> float:
+    def _rank(score: float, chroma: float, length: int, amp_drift: float, w_drift: float) -> float:
         length_reward = min((length / sr) / _LOOP_LEN_TARGET_S, 1.0)
         timbre_drift = 1.0 - chroma
-        return score + _W_LENGTH * length_reward - _W_TIMBRE_DRIFT * timbre_drift
+        drift_penalty = w_drift * min(amp_drift / _AMP_DRIFT_NORM, 1.0)
+        return score + _W_LENGTH * length_reward - _W_TIMBRE_DRIFT * timbre_drift - drift_penalty
 
     # Seam gate (pitched only): drop loops that wrap across too much phase/timbre change — the
     # cause of the mid-crossfade dip — so the length reward picks the longest *clean* loop
@@ -787,6 +908,10 @@ def find_loop_candidates(
     # length behaviour (see _DRIFT_GATE_MAX_MOVE).
     peak_move = _peak_env_movement(mono, region_start, region_end)
     steady = peak_move <= _DRIFT_GATE_MAX_MOVE
+    # Steady sounds use the drift GATE above (so the ranking penalty would be redundant — kept at
+    # 0 to leave that tuned path unchanged). Evolving sounds skip the gate; there the additive
+    # amp_drift penalty arbitrates among the long candidates, preferring the phase-aligned one.
+    w_drift = 0.0 if steady else _W_AMP_DRIFT
     if clean:
         # Drift gate within the seam-clean pool: drop loops that wrap across a peak/asymmetry
         # drift (the per-loop wobble) so the length reward picks the longest *stationary* loop,
@@ -794,12 +919,27 @@ def find_loop_candidates(
         # and let length/timbre decide (no worse than before the gate). t[5] is amp_drift.
         low_drift = [t for t in clean if t[5] <= _DRIFT_GATE] if steady else []
         pool = low_drift if low_drift else clean
-        pool.sort(key=lambda t: (_rank(t[0], t[4], t[2] - t[1]), t[1], t[2]), reverse=True)
+        # Length gate (never wipe): once we have clean, low-drift loops, a sub-floor micro-loop
+        # must not win on its trivially-perfect self-seam. Drop them when any longer loop remains.
+        long_enough = [t for t in pool if (t[2] - t[1]) >= _MIN_LOOP_RANK_S * sr]
+        pool = long_enough if long_enough else pool
+        pool.sort(key=lambda t: (_rank(t[0], t[4], t[2] - t[1], t[5], w_drift), t[1], t[2]), reverse=True)
         ranked = pool
     else:
-        # all seams exceed the gate → cleanest seam first (then longer / higher score)
-        ranked = sorted(scored, key=lambda t: (-seam_of(t[1], t[2]), _rank(t[0], t[4], t[2] - t[1])), reverse=True)
+        # all seams exceed the gate → cleanest seam first (then longer / higher score). Still
+        # drop sub-floor micro-loops first (never wipe) so a tiny loop can't win here either.
+        long_enough = [t for t in scored if (t[2] - t[1]) >= _MIN_LOOP_RANK_S * sr]
+        pool = long_enough if long_enough else scored
+        ranked = sorted(pool, key=lambda t: (-seam_of(t[1], t[2]), _rank(t[0], t[4], t[2] - t[1], t[5], w_drift)), reverse=True)
     result = [((s, e), sc) for sc, s, e, *_ in ranked[:max_candidates]]
+    if aligned is not None:
+        a_s, a_e, a_mm = aligned
+        # Offer the period-aligned loop first: the pipeline validates candidates in order and takes
+        # the first that passes splice validation, so a clean aligned loop wins over the ranked
+        # seam picks. Score maps the raw mismatch to the quality scale (≥ threshold so it is kept).
+        a_score = max(quality_threshold, round(1.0 - a_mm, 3))
+        result = [((a_s, a_e), a_score)] + [r for r in result if r[0] != (a_s, a_e)]
+        result = result[:max_candidates]
     scored = ranked  # keep debug ('best', n_passed) consistent with the returned order
 
     if dbg:
