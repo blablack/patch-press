@@ -1024,12 +1024,58 @@ def central_fallback_loop(
     return start, end
 
 
+# ── Loop crossfade ──────────────────────────────────────────────────────────────────────────
+
+# Crossfade curve selection. An equal-gain (linear) fade holds a constant SUM, so it keeps the
+# level flat only when the two blended windows are CORRELATED — the phase-locked primary loop,
+# where the loop tail equals the pre-start copy sample-for-sample. An equal-power (sin/cos) fade
+# holds a constant sum of SQUARES, flat for UNcorrelated windows — the central fallback, or a loop
+# wrapping across a modulation/timbre change. Using the wrong curve makes the OPPOSITE artifact:
+# equal-gain dips ~3 dB on uncorrelated material, equal-power bumps ~3 dB on correlated material.
+# The midpoint-RMS crossover sits at Pearson r = 1/3 (RMS² ∝ 0.5·(1+r) for linear vs (1+r) for
+# equal-power at the blend midpoint; linear is flatter above r=1/3, equal-power below). "auto"
+# measures r at each seam and picks the flatter curve, so the phase-locked path (r≈1) keeps the
+# existing linear fade and only the fallback/evolving seams switch to equal-power.
+_XFADE_COHERENCE_THRESHOLD = 1.0 / 3.0
+
+
+def _crossfade_gains(n: int, equal_power: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Return (fade_out, fade_in) gain ramps of length n for the chosen curve."""
+    t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    if equal_power:
+        return np.cos(t * (np.pi / 2.0)).astype(np.float32), np.sin(t * (np.pi / 2.0)).astype(np.float32)
+    return (1.0 - t).astype(np.float32), t
+
+
+def _seam_needs_equal_power(curve: str, fade_out_win: np.ndarray, fade_in_win: np.ndarray) -> bool:
+    """Resolve the crossfade curve for a single seam.
+
+    curve "equal_gain"/"equal_power" force the choice. "auto" measures the Pearson correlation of
+    the two (mono) windows the fade blends and returns True (equal-power) when they are uncorrelated
+    enough that a linear fade would dip more than an equal-power one (r <= _XFADE_COHERENCE_THRESHOLD).
+    """
+    if curve == "equal_power":
+        return True
+    if curve == "equal_gain":
+        return False
+    if curve != "auto":
+        raise ValueError(f"unknown crossfade curve: {curve!r}")
+    a = fade_out_win - fade_out_win.mean()
+    b = fade_in_win - fade_in_win.mean()
+    denom = float(np.sqrt(float(np.dot(a, a)) * float(np.dot(b, b))))
+    if denom <= 1e-12:
+        return False  # a (near-)silent window can't audibly dip; linear avoids the equal-power bump
+    r = float(np.dot(a, b) / denom)
+    return r <= _XFADE_COHERENCE_THRESHOLD
+
+
 def bake_loop_crossfade(
     buf: AudioBuffer,
     loop_start: int,
     loop_end: int,
     loop_fade_ms: float,
     release_fade_ms: float | None = None,
+    curve: str = "auto",
 ) -> AudioBuffer:
     """Bake a backward crossfade at loop_end and a release crossfade just after it.
 
@@ -1048,8 +1094,11 @@ def bake_loop_crossfade(
       easing into the real tail.
 
     release_fade_ms defaults to loop_fade_ms / 2 — shorter so the natural decay arrives
-    quickly. Both fades use equal-gain (linear) curves, appropriate for blending near-
-    copies of the same periodic signal.
+    quickly. `curve` picks the fade shape per seam: "auto" (default) measures whether the
+    blended windows are phase-coherent and uses equal-gain (linear) for correlated windows —
+    the phase-locked primary loop, where linear holds the level flat — or equal-power (sin/cos)
+    for uncorrelated ones — the central fallback or a loop wrapping a timbre change, where linear
+    would dip ~3 dB. "equal_gain"/"equal_power" force one curve (see _XFADE_COHERENCE_THRESHOLD).
     """
     sr = buf.sample_rate
     n = buf.data.shape[1]
@@ -1070,15 +1119,17 @@ def bake_loop_crossfade(
     out = AudioBuffer(data=buf.data.copy(), sample_rate=sr)
 
     if loop_fade_len >= 2:
-        t = np.linspace(0.0, 1.0, loop_fade_len, dtype=np.float32)
         existing = buf.data[:, loop_end - loop_fade_len : loop_end]
         pre_ls = buf.data[:, loop_start - loop_fade_len : loop_start]
-        out.data[:, loop_end - loop_fade_len : loop_end] = existing * (1.0 - t) + pre_ls * t
+        equal_power = _seam_needs_equal_power(curve, existing.mean(axis=0), pre_ls.mean(axis=0))
+        fade_out, fade_in = _crossfade_gains(loop_fade_len, equal_power)
+        out.data[:, loop_end - loop_fade_len : loop_end] = existing * fade_out + pre_ls * fade_in
 
     if release_fade_len >= 2:
-        t = np.linspace(0.0, 1.0, release_fade_len, dtype=np.float32)
         existing_tail = buf.data[:, loop_end : loop_end + release_fade_len]
         post_ls = buf.data[:, loop_start : loop_start + release_fade_len]
-        out.data[:, loop_end : loop_end + release_fade_len] = post_ls * (1.0 - t) + existing_tail * t
+        equal_power = _seam_needs_equal_power(curve, post_ls.mean(axis=0), existing_tail.mean(axis=0))
+        fade_out, fade_in = _crossfade_gains(release_fade_len, equal_power)
+        out.data[:, loop_end : loop_end + release_fade_len] = post_ls * fade_out + existing_tail * fade_in
 
     return out

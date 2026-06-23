@@ -88,6 +88,21 @@ class ScanSummary:
 
 _CLASSIFY_NOTES = [36, 48, 60, 72, 84]
 
+# Loopability: a sustained sound that EVOLVES continuously (a swept filter, e.g. CASCADE 21) never
+# returns to an earlier timbre, so no loop wraps seamlessly — the brightness jumps once per wrap.
+# The MFCC distance between the shipped loop's start window and end window measures that jump.
+# Measured over the 5 classify notes (median), it separates repeatable sustains from evolving ones.
+# IMPORTANT: the seam depends on the capture duration (the loop finder may escape to a settled tail
+# on a long hold), so this MUST be tuned at the production --duration, not the scan default. Tuned at
+# 25 s over 3 renders each (median, worst case): loopable — ARP 2, PHAROH 4, MIRIDOR 8, ENCOUNTERS 8,
+# BANKS,T. 11, ELECTRON 1 11.4 | evolving — CASCADE 21 20, TRW 22, OB GenvivY 24, RUMBLE 32,
+# Thunder 3 34, SAHARA 49, SAW EM UP 35+. Clean gap 11.4→20; threshold 16 sits mid-gap (~4.5 each
+# side). NOTE: median is the right aggregator — max/count can't separate (good ELECTRON 1 has 2 notes
+# at 34/48, same as CASCADE; only its other 3 notes being <12 vs CASCADE's 10/15/20 distinguishes
+# them). Decision is also written as a # REVIEW flag the user can flip.
+_LOOP_SEAM_WIN_S = 0.3
+_LOOP_TIMBRE_SEAM_MAX = 16.0  # median MFCC seam (over classify notes) above which we disable looping
+
 
 def _sound_type_to_profile(sound_type: str) -> str:
     if sound_type == "Pluck":
@@ -95,6 +110,58 @@ def _sound_type_to_profile(sound_type: str) -> str:
     if sound_type.startswith("Sustained + rhythm"):
         return "pad"
     return "synth"
+
+
+def _loop_timbre_seam(analyzed_sample, tempo_bpm: float | None) -> float | None:
+    """MFCC distance at the shipped loop's wrap for one analysed note, or None if it has no loop.
+
+    `analyzed_sample` is the output of the real analysis (`_analyze_one`): its `audio` is trimmed
+    and `loop_points` are the loop the pipeline would actually export (real candidate or fallback).
+    Compare the timbre (mean MFCC over a short window) just after loop_start with that just before
+    loop_end — the two spans that abut at the wrap. Low = the timbre repeats (seamless); high = it
+    jumped (an evolving, non-repeatable sound).
+    """
+    import numpy as np
+    import librosa
+
+    if analyzed_sample.loop_points is None:
+        return None
+    ls, le = analyzed_sample.loop_points
+    audio = analyzed_sample.audio
+    sr = audio.sample_rate
+    w = int(_LOOP_SEAM_WIN_S * sr)
+    mono = audio.to_mono()
+    if ls < 0 or le > len(mono) or le - w < ls + w:
+        return None
+    a = librosa.feature.mfcc(y=mono[ls : ls + w].astype(float), sr=sr, n_mfcc=13).mean(axis=1)
+    b = librosa.feature.mfcc(y=mono[le - w : le].astype(float), sr=sr, n_mfcc=13).mean(axis=1)
+    return float(np.linalg.norm(a - b))
+
+
+def _is_non_loopable(samples, tempo_bpm: float | None) -> tuple[bool, float | None]:
+    """Vote across the classify notes: True if the median loop timbre-seam is too high to loop.
+
+    Runs the real per-sample analysis (trim → envelope → loop find → fallback) so the seam is
+    measured on the loop the pipeline would actually ship, then takes the median over the notes.
+    Per-note seams are noisy (a 5-note sample), so require at least 3 looped notes before making the
+    call — otherwise leave looping enabled (the safe default).
+    """
+    import numpy as np
+
+    from ..analysis.pipeline import _analyze_one
+    from ..config.schema import AnalysisConfig
+
+    cfg = AnalysisConfig(loop=True, pitch_verify=False, normalize="none", tempo_bpm=tempo_bpm)
+    seams = []
+    for s in samples:
+        analyzed = _analyze_one(s, cfg)
+        seam = _loop_timbre_seam(analyzed, tempo_bpm)
+        if seam is not None:
+            seams.append(seam)
+    if len(seams) < 3:
+        return False, None
+    median = float(np.median(seams))
+    return median > _LOOP_TIMBRE_SEAM_MAX, median
 
 
 def _sanitize(name: str) -> str:
@@ -264,6 +331,14 @@ def scan_from_probe(
             sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
             tqdm.write(f"  {preset_name}: {sound_type}")
             preset_profile = _sound_type_to_profile(sound_type)
+            # A sustained but continuously-evolving timbre (swept filter) has no seamless loop —
+            # disable looping (captured one-shot at its full sustain length) and flag for review.
+            if preset_profile != "pluck":
+                non_loopable, seam = _is_non_loopable(classify_samples, tempo_bpm)
+                if non_loopable:
+                    preset_profile = "pluck"
+                    result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
+                    tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
         path = _write_config(
             preset_name,
             plugin_path,
@@ -442,6 +517,14 @@ def scan_clap(
             sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
             tqdm.write(f"  {preset_name}: {sound_type}")
             preset_profile = _sound_type_to_profile(sound_type)
+            # A sustained but continuously-evolving timbre (swept filter) has no seamless loop —
+            # disable looping (captured one-shot at its full sustain length) and flag for review.
+            if preset_profile != "pluck":
+                non_loopable, seam = _is_non_loopable(classify_samples, tempo_bpm)
+                if non_loopable:
+                    preset_profile = "pluck"
+                    result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
+                    tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
 
         path = _write_clap_config(
             preset_name,
@@ -486,14 +569,22 @@ def _find_closest_wavs(wavs: list[Path], targets: list[int]) -> list[Path]:
     return selected
 
 
-def _detect_folder_profile(subfolder: Path, library_type: str) -> str:
-    """Return profile for the folder using classify on candidate WAVs."""
+def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str | None]:
+    """Return (profile, review_flag) for the folder, classifying the candidate WAVs.
+
+    Like the VST/CLAP paths, a sustained-but-continuously-evolving timbre (a swept filter that never
+    repeats) has no seamless loop, so it is demoted to `pluck` (captured one-shot, no loop) and a
+    review flag is returned. Unlike those paths there is no render duration to choose — the WAV is a
+    fixed recording — so `_is_non_loopable` measures the real sample's real loop directly. NOTE: the
+    seam threshold was tuned on 25 s VST renders; library material may want its own value (see the
+    constant's comment) — the flag lets the user override.
+    """
     if library_type == "kit":
-        return "drums"
+        return "drums", None
 
     wavs = sorted(subfolder.glob("*.wav"))
     if not wavs:
-        return "synth"
+        return "synth", None
 
     candidates = _find_closest_wavs(wavs, [48, 60, 72]) or wavs[:3]
     samples = []
@@ -505,7 +596,13 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> str:
 
     sset = SampleSet(name=subfolder.name, category=Category.SYNTH, samples=samples)
     sound_type = classify_sampleset(sset, workers=1)
-    return _sound_type_to_profile(sound_type)
+    profile = _sound_type_to_profile(sound_type)
+
+    if profile != "pluck":
+        non_loopable, seam = _is_non_loopable(samples, tempo_bpm=None)
+        if non_loopable:
+            return "pluck", f"evolving timbre (loop seam {seam:.0f}) — looping disabled"
+    return profile, None
 
 
 def scan_library(
@@ -528,17 +625,24 @@ def scan_library(
     summary = ScanSummary(total=len(subfolders))
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
-        detected_profile = _detect_folder_profile(subfolder, library_type)
-        folder_profile = profile if profile is not None else detected_profile
-        tqdm.write(f"  {subfolder.name} → {folder_profile}")
+        if profile is not None:
+            folder_profile, review_flag = profile, None
+        else:
+            folder_profile, review_flag = _detect_folder_profile(subfolder, library_type)
+        if review_flag:
+            tqdm.write(f"  {subfolder.name} → {folder_profile} ({review_flag})")
+        else:
+            tqdm.write(f"  {subfolder.name} → {folder_profile}")
         safe_name = _sanitize(subfolder.name)
 
+        review_line = f"# REVIEW: {review_flag}\n" if review_flag else ""
         capture_block = (
             ""
             if folder_profile == "drums"
             else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
         )
         content = (
+            f"{review_line}"
             f"source:\n"
             f"  type: library\n"
             f"  path: {subfolder}\n"
@@ -552,5 +656,9 @@ def scan_library(
         out = config_dir / f"{safe_name}.yaml"
         out.write_text(content)
         summary.written.append(out)
+        if review_flag:
+            summary.reviews.append(
+                (subfolder.name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=[review_flag]))
+            )
 
     return summary

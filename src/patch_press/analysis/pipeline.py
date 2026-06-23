@@ -9,7 +9,7 @@ from functools import partial
 from ..progress import ProgressBar as tqdm
 
 
-_NOISY_LIBS = ("numba", "pymusiclooper", "librosa")
+_NOISY_LIBS = ("numba", "librosa")
 
 
 class _ThirdPartyFilter(logging.Filter):
