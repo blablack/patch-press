@@ -91,6 +91,18 @@ _SEAM_GATE = 0.20          # max waveform mismatch (normalised RMS) between the 
                            # the mid-crossfade dip) are gated out, forcing a shorter clean loop.
                            # Never wipes the pool — if all exceed it, the cleanest seam is kept.
 
+# Timbre-travel gate. The chroma seam score (_chroma_score) is pitch-class — BLIND to FM
+# brightness / spectral-envelope motion. So a loop can have a waveform-clean, chroma-perfect seam
+# while the timbre still travels ACROSS the loop body and audibly snaps back on every wrap
+# (ELECTRON 1 / C5: chroma wander ~0, but MFCC start→end jump the worst in the bank). MFCC sees
+# that motion. This gate drops candidates whose end-vs-start timbre differs by more than the
+# threshold, so the length reward then picks the longest *timbrally-stationary* loop. Self-
+# targeting like _SEAM_GATE: a genuinely static tone matches at any length (every candidate passes,
+# a long loop still wins); only the traveling ones are filtered. Never wipes — if every candidate
+# travels (a globally-evolving sound, no stationary window), keep them all and let length decide.
+_MFCC_WIN = 8192           # ~186 ms at 44.1k — long enough for a stable MFCC timbre estimate
+_MFCC_SEAM_GATE = 0.06     # max end→start MFCC cosine distance before a loop is judged to travel
+
 
 # Direct period-aligned loop. The chroma/tempo candidate sources propose beat-synced lengths
 # that wrap mid-modulation (audible pumping even with a clean seam crossfade). The fix is to
@@ -343,6 +355,29 @@ def _chroma_score(mono: np.ndarray, sr: int, start: int, end: int) -> float:
     cb = librosa.feature.chroma_stft(y=post, sr=sr, n_fft=n_fft_b, tuning=0.0).mean(axis=1)
     denom = np.linalg.norm(ca) * np.linalg.norm(cb)
     return float(np.dot(ca, cb) / denom) if denom > 0 else 0.0
+
+
+def _mfcc_seam_distance(mono: np.ndarray, sr: int, start: int, end: int) -> float:
+    """Cosine distance of mean MFCC (timbre) just before loop_end vs just after loop_start.
+
+    The counterpart to _chroma_score for the dimension chroma can't see. Chroma is pitch-class, so
+    it reports a perfect seam even when the FM brightness / spectral envelope has travelled across
+    the loop body — which is exactly what makes such a loop audibly reset on every wrap. MFCC
+    captures that. 0 = same timbre across the wrap; higher = the body travelled in timbre. The 0th
+    coefficient (overall energy) is dropped so this measures timbre SHAPE, not level (level is
+    already handled by amp_score / amp_drift). end is exclusive (Deluge convention).
+    """
+    win = min(_MFCC_WIN, end - start)
+    if win < 512:
+        return 0.0
+    pre = mono[max(0, end - win):end]
+    post = mono[start:min(len(mono), start + win)]
+    if len(pre) < 512 or len(post) < 512:
+        return 0.0
+    ma = librosa.feature.mfcc(y=pre, sr=sr, n_mfcc=20).mean(axis=1)[1:]
+    mb = librosa.feature.mfcc(y=post, sr=sr, n_mfcc=20).mean(axis=1)[1:]
+    denom = float(np.linalg.norm(ma) * np.linalg.norm(mb))
+    return float(1.0 - np.dot(ma, mb) / denom) if denom > 0 else 0.0
 
 
 def _seam_slopes(mono: np.ndarray, start: int, end: int, w: int) -> tuple[float, float]:
@@ -861,14 +896,18 @@ def find_loop_candidates(
             snap_pool.append((s_snap, e_snap, pre_chroma, src))
 
     # Pass 2: score at the snapped endpoints so the score reflects the actual seam.
-    scored: list[tuple[float, int, int, str, float, float]] = []
+    scored: list[tuple[float, int, int, str, float, float, float]] = []
     dbg_cands: list[dict] = []
     for s, e, _sim, src in snap_pool:
         comps = _boundary_components(mono, sr, s, e)
         score = comps["score"]
         amp_drift = _amp_drift(mono, s, e, drift_win, peak)
-        if score >= quality_threshold:
-            scored.append((score, s, e, src, comps["chroma"], amp_drift))
+        passed = score >= quality_threshold
+        # MFCC is only needed for ranking the passing candidates (or for the debug dump); skip it
+        # for the many that fail the base seam score to avoid a per-candidate STFT.
+        mfcc_dist = _mfcc_seam_distance(mono, sr, s, e) if (passed or dbg) else 0.0
+        if passed:
+            scored.append((score, s, e, src, comps["chroma"], amp_drift, mfcc_dist))
         if dbg:
             amp_disc, deriv_disc = _seam_disc(mono, s, e)
             dbg_cands.append({
@@ -885,6 +924,8 @@ def find_loop_candidates(
                 "deriv_disc": round(deriv_disc, 4),
                 "amp_drift": round(amp_drift, 4),
                 "timbre_drift": round(1.0 - comps["chroma"], 4),
+                "mfcc_dist": round(mfcc_dist, 4),
+                "seam_match": round(_seam_match(mono, s, e, lock_win), 4) if t_wave else 0.0,
                 "passed": score >= quality_threshold,
             })
 
@@ -919,6 +960,12 @@ def find_loop_candidates(
         # and let length/timbre decide (no worse than before the gate). t[5] is amp_drift.
         low_drift = [t for t in clean if t[5] <= _DRIFT_GATE] if steady else []
         pool = low_drift if low_drift else clean
+        # Timbre-travel gate (never wipe): drop loops whose body travels in timbre (MFCC, t[6]).
+        # Chroma is blind to FM brightness motion, so a clean-seam, low-drift loop can still reset
+        # its timbre on every wrap (ELECTRON 1 / C5). Filtering these lets the length reward pick
+        # the longest *timbrally-stationary* loop. If every candidate travels, keep them all.
+        low_timbre = [t for t in pool if t[6] <= _MFCC_SEAM_GATE]
+        pool = low_timbre if low_timbre else pool
         # Length gate (never wipe): once we have clean, low-drift loops, a sub-floor micro-loop
         # must not win on its trivially-perfect self-seam. Drop them when any longer loop remains.
         long_enough = [t for t in pool if (t[2] - t[1]) >= _MIN_LOOP_RANK_S * sr]
@@ -926,17 +973,30 @@ def find_loop_candidates(
         pool.sort(key=lambda t: (_rank(t[0], t[4], t[2] - t[1], t[5], w_drift), t[1], t[2]), reverse=True)
         ranked = pool
     else:
-        # all seams exceed the gate → cleanest seam first (then longer / higher score). Still
-        # drop sub-floor micro-loops first (never wipe) so a tiny loop can't win here either.
+        # No candidate has a clean raw seam (e.g. an FM high note whose carrier can't phase-lock
+        # across the timbre the loop spans — every seam_match ≈ 1.0). The baked crossfade has to
+        # mask the seam either way. Keep the existing cleanest-seam pick UNLESS it travels in timbre
+        # (the reset the crossfade can't hide, ELECTRON 1 / C5): only then switch — to the LONGEST
+        # timbrally-stationary loop (the seam is crossfade-masked, long loops are wanted). Leaving
+        # the pick alone when it is already stationary keeps every clean preset's loops untouched.
         long_enough = [t for t in scored if (t[2] - t[1]) >= _MIN_LOOP_RANK_S * sr]
-        pool = long_enough if long_enough else scored
-        ranked = sorted(pool, key=lambda t: (-seam_of(t[1], t[2]), _rank(t[0], t[4], t[2] - t[1], t[5], w_drift)), reverse=True)
+        base_pool = long_enough if long_enough else scored
+        seam_first = sorted(base_pool, key=lambda t: (-seam_of(t[1], t[2]), _rank(t[0], t[4], t[2] - t[1], t[5], w_drift)), reverse=True)
+        low_timbre = [t for t in base_pool if t[6] <= _MFCC_SEAM_GATE]
+        if low_timbre and seam_first[0][6] > _MFCC_SEAM_GATE:
+            low_drift = [t for t in low_timbre if t[5] <= _DRIFT_GATE] if steady else []
+            pool = low_drift if low_drift else low_timbre
+            ranked = sorted(pool, key=lambda t: ((t[2] - t[1]), -seam_of(t[1], t[2])), reverse=True)
+        else:
+            ranked = seam_first
     result = [((s, e), sc) for sc, s, e, *_ in ranked[:max_candidates]]
-    if aligned is not None:
+    if aligned is not None and _mfcc_seam_distance(mono, sr, aligned[0], aligned[1]) <= _MFCC_SEAM_GATE:
         a_s, a_e, a_mm = aligned
         # Offer the period-aligned loop first: the pipeline validates candidates in order and takes
         # the first that passes splice validation, so a clean aligned loop wins over the ranked
         # seam picks. Score maps the raw mismatch to the quality scale (≥ threshold so it is kept).
+        # Skipped when the aligned loop travels in timbre (rare — a clean carrier seam usually means
+        # a stationary tone) so the MFCC-gated ranked pool can supply a stationary loop instead.
         a_score = max(quality_threshold, round(1.0 - a_mm, 3))
         result = [((a_s, a_e), a_score)] + [r for r in result if r[0] != (a_s, a_e)]
         result = result[:max_candidates]
@@ -957,6 +1017,17 @@ def find_loop_candidates(
                 "best": (
                     {"start": scored[0][1], "end": scored[0][2], "score": round(scored[0][0], 4)}
                     if scored else None
+                ),
+                "result0": (
+                    {"start": result[0][0][0], "end": result[0][0][1],
+                     "len_s": round((result[0][0][1] - result[0][0][0]) / sr, 3)}
+                    if result else None
+                ),
+                "aligned": (
+                    {"start": aligned[0], "end": aligned[1], "mm": round(aligned[2], 4),
+                     "len_s": round((aligned[1] - aligned[0]) / sr, 3),
+                     "mfcc": round(_mfcc_seam_distance(mono, sr, aligned[0], aligned[1]), 4)}
+                    if aligned is not None else None
                 ),
                 "chroma_movement": round(_chroma_movement(fps), 4),
                 "centroid_cv": round(_centroid_movement(mono, sr, region_start, region_end), 4),
