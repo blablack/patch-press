@@ -990,7 +990,14 @@ def find_loop_candidates(
         else:
             ranked = seam_first
     result = [((s, e), sc) for sc, s, e, *_ in ranked[:max_candidates]]
-    if aligned is not None and _mfcc_seam_distance(mono, sr, aligned[0], aligned[1]) <= _MFCC_SEAM_GATE:
+    # A strong slow timbre-LFO (t_mod from the spectral detector) makes any sub-cycle carrier-
+    # aligned loop wrap mid-sweep: it is raw-seam-clean yet audibly pumps on every wrap.
+    # _period_aligned_loop caps its length at _PERIOD_TARGET_MAX_S, so when the LFO is longer than
+    # that the aligned loop can never span a full cycle — suppress it and let the ranker pick the
+    # longest whole-cycle loop instead. (Faster modulations, where an aligned loop can still span a
+    # cycle, are unaffected.)
+    slow_lfo = bool(t_mod) and t_mod > int(_PERIOD_TARGET_MAX_S * sr)
+    if aligned is not None and not slow_lfo and _mfcc_seam_distance(mono, sr, aligned[0], aligned[1]) <= _MFCC_SEAM_GATE:
         a_s, a_e, a_mm = aligned
         # Offer the period-aligned loop first: the pipeline validates candidates in order and takes
         # the first that passes splice validation, so a clean aligned loop wins over the ranked

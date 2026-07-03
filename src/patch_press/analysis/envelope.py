@@ -26,6 +26,16 @@ _AUTOCORR_MIN_S = 0.35  # minimum modulation period to detect (excludes sub-quar
 _AUTOCORR_MAX_S = 8.0   # maximum modulation period to detect
 _AUTOCORR_THRESHOLD = 0.35  # minimum normalised autocorrelation peak to accept period
 _RMS_MODULATION_DEPTH = 0.40  # (max-min)/mean of sustain RMS required before running autocorr
+# Spectral timbre-LFO detection. The RMS autocorrelator above sees only amplitude motion and is
+# capped at _AUTOCORR_MAX_S; a free-running brightness LFO (the spectral centroid sweeping while
+# the amplitude stays flat, or ripples at a different rate) is invisible to it and can be slower
+# than its cap. Detect it on the spectral-centroid envelope over the full held note, with a STRICT
+# periodicity peak so static or merely-drifting timbres (the common FM pad) are left untouched. A
+# free-running LFO is not tempo-synced, so this bypasses the BPM snap.
+_SPECTRAL_LFO_MIN_S = 1.0           # below this the RMS path already handles fast tremolo/beating
+_SPECTRAL_LFO_MAX_S = 12.0          # slow-LFO ceiling (well past the RMS _AUTOCORR_MAX_S)
+_SPECTRAL_CENTROID_CV = 0.10        # min coefficient-of-variation of the centroid before looking
+_SPECTRAL_AUTOCORR_THRESHOLD = 0.5  # strict periodicity peak (vs 0.35 RMS) — rejects one-off drift
 _BPM_SNAP_TOLERANCE = 0.12  # accept period if within this fraction of a musical subdivision
 # Plateau extension (Fix #2): a sound that decays to a steady plateau *below* the 0.4 sustain
 # line still holds a loopable region until note-off. These gate an extend-only widening of
@@ -88,6 +98,43 @@ def _detect_modulation_period(rms: np.ndarray, sr: int, start_frame: int, end_fr
 
     peak_frame = min_lag + best_offset
     return peak_frame * _HOP
+
+
+def _detect_spectral_lfo_period(mono: np.ndarray, sr: int, start: int, end: int) -> int | None:
+    """Period (samples) of a slow, periodic spectral-centroid sweep over [start, end), or None.
+
+    A free-running brightness LFO moves the spectral centroid on a slow cycle the RMS detector
+    cannot see (amplitude can stay flat, or ripple at another rate). Autocorrelate the centroid
+    envelope. Require the centroid to actually move (CV gate) AND a strong autocorrelation peak,
+    so a one-off attack→sustain filter sweep or random drift (no real period) is rejected and the
+    sound is left on its existing path.
+    """
+    seg = mono[start:end]
+    if len(seg) < 4 * _HOP:
+        return None
+    sc = librosa.feature.spectral_centroid(y=seg, sr=sr, hop_length=_HOP)[0]
+    m = float(sc.mean())
+    if m <= 0 or float(sc.std() / m) < _SPECTRAL_CENTROID_CV:
+        return None
+    x = sc - sc.mean()
+    nn = len(x)
+    fftx = np.fft.rfft(x, n=2 * nn)
+    ac = np.fft.irfft(np.abs(fftx) ** 2)[:nn]
+    ac /= ac[0] + 1e-12
+
+    min_lag = max(1, int(_SPECTRAL_LFO_MIN_S * sr / _HOP))
+    max_lag = min(nn - 1, int(_SPECTRAL_LFO_MAX_S * sr / _HOP))
+    if min_lag >= max_lag or max_lag - min_lag < 3:
+        return None
+    search = ac[min_lag:max_lag]
+    is_peak = (search[1:-1] > search[:-2]) & (search[1:-1] > search[2:])
+    peak_offsets = np.where(is_peak)[0] + 1
+    if len(peak_offsets) == 0:
+        return None
+    best_offset = int(peak_offsets[np.argmax(search[peak_offsets])])
+    if search[best_offset] < _SPECTRAL_AUTOCORR_THRESHOLD:
+        return None
+    return (min_lag + best_offset) * _HOP
 
 
 def _snap_to_bpm_subdivision(period_s: float, bpm: float) -> float | None:
@@ -286,6 +333,30 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None, note_off: int |
         classification = "sustained_with_modulation"
     else:
         classification = "sustained"
+
+    # Spectral timbre-LFO override. A free-running brightness sweep is invisible to the RMS
+    # detector above and is not tempo-synced, so it bypasses the BPM snap. Search over the full
+    # HELD region (first sustain-threshold crossing → note-off), NOT the RMS-peak-anchored
+    # sustain_start/end: a deep LFO bounces the RMS so argmax lands late and the 0.4·peak threshold
+    # collapses 'sustain' to a sliver near note-off, far too short to contain one LFO cycle. When a
+    # strong slow spectral period is found it (a) becomes the modulation period so the loop finder
+    # locks the loop length to whole LFO cycles, and (b) re-anchors the loop search region to the
+    # whole held note so a full sweep fits (two cycles' worth, for placement room).
+    above_thr = np.where(rms >= _SUSTAIN_THRESHOLD * peak_rms)[0]
+    if len(above_thr) > 0:
+        hold_start = int(above_thr[0]) * _HOP
+        hold_end = min((int(above_thr[-1]) + 1) * _HOP, n)
+        if note_off is not None:
+            hold_end = min(hold_end, note_off)
+        if hold_end - hold_start > int(_SPECTRAL_LFO_MIN_S * sr):
+            lfo_period = _detect_spectral_lfo_period(mono, sr, hold_start, hold_end)
+            if lfo_period is not None:
+                log.debug(f"  spectral LFO period={lfo_period / sr:.3f}s (overrides RMS modulation)")
+                period_samples = lfo_period
+                classification = "sustained_with_modulation"
+                sustain_start = attack_end = hold_start
+                attack_s = round(attack_end / sr, 4)
+                sustain_end = min(max(sustain_end, hold_start + 2 * lfo_period), hold_end)
 
     return EnvelopeResult(
         peak_db=peak_db,
