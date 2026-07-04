@@ -43,6 +43,21 @@ _BPM_SNAP_TOLERANCE = 0.12  # accept period if within this fraction of a musical
 _PLATEAU_FLOOR = 0.15      # RMS fraction of peak still counted as "held" (vs released to silence)
 _PLATEAU_FLATNESS = 0.25   # max coefficient of variation of the settled tail to count as flat
 _MIN_PLATEAU_S = 0.5       # minimum tail length (s) before a plateau extension is considered
+# Decay-to-plateau sustain (Fix #3). A library ADSR note that attacks to a peak then DECAYS to a
+# lower, flat sustain plateau has its RMS max at the TOP of the decay, so sustain_start (= the peak
+# frame) sits on the decay slope. The plateau extension above only widens sustain_end, so the region
+# still spans the whole decay and the loop finder places loops mid-decay — audible, because the held
+# note should rest at the plateau level, not partway down it. When a long flat plateau is found BELOW
+# the sustain line (the extension can't reach it cleanly once the release tail pollutes its flatness
+# check), re-anchor the loop region onto that plateau, skipping the decay. Gated to plateaus below the
+# 0.4 sustain line so flat-top / slow-swell sounds (plateau at ~peak) are left exactly as before.
+_PLATEAU_SCAN_WINDOW_S = 0.4   # sliding window for the decay-to-plateau flatness scan
+_PLATEAU_SCAN_CV = 0.06        # max coefficient of variation within the window to count as flat
+# Override only when the plateau sits clearly BELOW the peak (a real decay preceded it). Flat-top
+# and slow-swell sustains hold at ~0.9–1.0 of peak, well above this, so they keep their existing
+# peak-anchored region; a genuine decay-to-sustain plateau (Creamy Poly: 0.22–0.41 of peak) is below
+# it and gets re-anchored. The gap between the two classes is wide, so the exact value is not touchy.
+_DECAY_PLATEAU_MAX_FRAC = 0.6
 
 
 def _to_db(v: float) -> float:
@@ -98,6 +113,51 @@ def _detect_modulation_period(rms: np.ndarray, sr: int, start_frame: int, end_fr
 
     peak_frame = min_lag + best_offset
     return peak_frame * _HOP
+
+
+def _detect_settled_plateau(
+    rms: np.ndarray, peak_frame: int, peak_rms: float, sr: int
+) -> tuple[int, int, float] | None:
+    """Longest flat, above-floor RMS run after the peak — the decayed-to sustain plateau.
+
+    Returns (start_sample, end_sample, plateau_level_rms) for the longest window-run whose local
+    coefficient of variation stays below _PLATEAU_SCAN_CV and whose level stays above the silence
+    floor, or None if no run reaches _MIN_PLATEAU_S. Unlike the sustain_end plateau extension this
+    isolates the plateau from BOTH the preceding decay and the trailing release, so its level can be
+    compared against the sustain threshold to tell a genuine decay-to-plateau ADSR (plateau well
+    below peak) from a flat-top / swell (plateau at peak). A modulated sound has no flat run and
+    returns None, so tremolo/LFO paths are untouched.
+    """
+    W = max(2, int(_PLATEAU_SCAN_WINDOW_S * sr / _HOP))
+    post = rms[peak_frame:]
+    if len(post) < W + 2:
+        return None
+    floor = _PLATEAU_FLOOR * peak_rms
+    sw = np.lib.stride_tricks.sliding_window_view(post, W)
+    m = sw.mean(axis=1)
+    cv = np.where(m > 1e-9, sw.std(axis=1) / m, np.inf)
+    flat = (m > floor) & (cv <= _PLATEAU_SCAN_CV)  # flag per window START index
+
+    # Longest contiguous run of flat window-starts; the plateau spans the samples they cover.
+    best_a, best_len, i = 0, 0, 0
+    while i < len(flat):
+        if flat[i]:
+            j = i
+            while j < len(flat) and flat[j]:
+                j += 1
+            if j - i > best_len:
+                best_a, best_len = i, j - i
+            i = j
+        else:
+            i += 1
+    if best_len == 0:
+        return None
+    a = best_a
+    b = best_a + best_len - 1 + W  # last covered frame
+    if (b - a) * _HOP < _MIN_PLATEAU_S * sr:
+        return None
+    level = float(post[a:b].mean())
+    return (peak_frame + a) * _HOP, (peak_frame + b) * _HOP, level
 
 
 def _detect_spectral_lfo_period(mono: np.ndarray, sr: int, start: int, end: int) -> int | None:
@@ -263,6 +323,19 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None, note_off: int |
                 if len(above) > 0:
                     plateau_end = min((end_frame + int(above[-1]) + 1) * _HOP, n)
                     sustain_end = max(sustain_end, plateau_end)
+
+    # Decay-to-plateau: re-anchor the region onto a flat sustain plateau that sits clearly below the
+    # peak (the decay-to-low-sustain ADSR the sustain_end extension above can't reach cleanly). Only
+    # fires when the plateau is below _DECAY_PLATEAU_MAX_FRAC of the peak, so flat-top and slow-swell
+    # sounds — whose plateau is at/near the peak — keep the existing peak-anchored region untouched.
+    # Skips the decay slope so the loop finder no longer places loops mid-decay.
+    plateau = _detect_settled_plateau(rms, peak_frame, peak_rms, sr)
+    if plateau is not None:
+        p_start, p_end, p_level = plateau
+        if p_level < _DECAY_PLATEAU_MAX_FRAC * peak_rms and p_start > sustain_start:
+            sustain_start = attack_end = p_start
+            attack_s = round(attack_end / sr, 4)
+            sustain_end = max(sustain_end, p_end)
 
     # Fallback: too short a sustain region — use quarter-points
     min_region = int(1.0 * sr)
