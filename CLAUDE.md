@@ -26,7 +26,7 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
 
 ## Profiles
 
-Two profiles exist: `synth` (melodic, full range) and `drums` (multi-velocity, multi-RR). Duration and loop settings are inferred by the scan command — profiles are just the baseline.
+Four profiles exist: `synth` (melodic, full range), `pad` (sustained + evolving/rhythmic timbre, still loops), `pluck` (no sustain to loop — also auto-assigned when the non-loopable detector flags a continuously-evolving timbre), and `drums` (multi-velocity, multi-RR, no note_range/note_step). `synth`/`pad`/`pluck` are auto-detected from probe classification (`_sound_type_to_profile` in `runner/scan.py`); duration and loop settings are inferred by the scan command — profiles are just the baseline.
 
 ## Key conventions
 
