@@ -295,9 +295,159 @@ def _phase_lock_end(mono: np.ndarray, start: int, end_approx: int, period: int, 
     return int(cand[int(np.argmin(ssd))])
 
 
+def _exact_sub_period(
+    mono: np.ndarray,
+    sr: int,
+    region_start: int,
+    region_end: int,
+    midi_note: int | None,
+    hint_period: int | None,
+) -> float | None:
+    """Exact sub-octave repeat period (float samples) to quantize the loop length to, or None.
+
+    Returns a value only when a sub-octave is detected (_detect_sub_multiple) AND the pitch is known.
+    The sub period is then that whole-number octave multiple of the EXACT fundamental derived from the
+    MIDI note. Using the pitch-derived period rather than the autocorr peak matters: the sub sits at an
+    exact musical octave below the root, and a loop spanning hundreds of cycles quantized to the exact
+    float stays phase-locked, where a sub-sample period error would drift the wrap back off-phase.
+    """
+    if midi_note is None or not hint_period:
+        return None
+    sub_mult = _detect_sub_multiple(mono, sr, region_start, region_end, hint_period)
+    if sub_mult is None:
+        return None
+    f0_period = sr / (440.0 * 2.0 ** ((midi_note - 69) / 12.0))
+    return sub_mult * f0_period
+
+
+def _snap_end_to_sub(mono: np.ndarray, start: int, end: int, sub_period: float) -> int:
+    """Move `end` to a sub-aligned length whose seam is also amplitude-continuous, or leave it.
+
+    Every start + round(k·sub_period) shares start's sub AND fundamental phase, so any k gives a
+    phase-clean wrap — but the AMPLITUDE envelope drifts across a long sustain, so the k nearest the
+    requested length can land where the level does not match (an audible step). Search a few k either
+    side and take the one with the smallest value discontinuity at the wrap.
+
+    Crucially, only ADOPT it when that discontinuity is below the click threshold: for some start
+    positions no nearby sub-multiple is level-continuous, and forcing one would trade the (subtle)
+    sub-octave reset for a (worse) click. In that case return `end` unchanged — the loop stays at its
+    original fundamental-aligned placement, no better but no worse than before this fix engaged.
+    """
+    n = len(mono)
+    peak = float(np.abs(mono).max()) or 1.0
+    k0 = max(1, round((end - start) / sub_period))
+    best_e, best_disc = None, None
+    for k in range(max(1, k0 - 4), k0 + 5):
+        e = start + int(round(k * sub_period))
+        if e <= start or e >= n:
+            continue
+        disc = abs(float(mono[e - 1]) - float(mono[start]))
+        if best_disc is None or disc < best_disc:
+            best_e, best_disc = e, disc
+    if best_e is not None and best_disc / peak < _AMP_DISC_THRESHOLD:
+        return best_e
+    return end
+
+
+# Sub-octave (undertone) detection. Many analog-style patches stack an oscillator one or two
+# octaves BELOW the root (Mini From Mars: Grand Square, Hairy Dog, Haus Baby). The signal then only
+# truly repeats every 2× (or 4×) the fundamental period, so a loop length snapped to the FUNDAMENTAL
+# can be an ODD multiple of the sub period and wrap mid-sub-cycle — audible as a "slower cycle" that
+# resets on every loop (user's ear, confirmed by loop-length-vs-sub-period alignment: OK notes land
+# on integer sub-multiples, flagged notes on half-integers). The autocorr signature is unambiguous:
+# a plain tone correlates equally at every multiple of its period, but a sub-octave correlates far
+# WORSE at the fundamental lag than at 2×/4× it (Grand Square C4: ac@T≈0.77 vs ac@2T≈0.999). So the
+# true repeat period is the SMALLEST k·t0 (k∈1..4) whose autocorr is within a whisker of the best —
+# k=1 for a plain tone, 2 or 4 for a sub-octave. This drives ONLY the final loop-length quantization
+# (_exact_sub_period → _detect_sub_multiple): the general period estimate (_detect_waveform_period)
+# stays on the fundamental, so candidate generation/ranking are byte-identical and a plain tone (k=1,
+# no sub) is entirely untouched — only a real sub-octave note has its loop length nudged onto a whole
+# sub-cycle.
+_SUBHARM_MAX_K = 4      # search undertone periods up to 4× the fundamental
+_SUBHARM_FRAC = 0.95    # k·t0 counts as the true period if its autocorr ≥ this fraction of the best
+_SUBHARM_MIN_AC = 0.5   # skip the check when even the best multiple is this weak (aperiodic/noisy)
+
+
 def _midi_to_period(sr: int, midi_note: int) -> int:
     freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
     return max(1, int(round(sr / freq)))
+
+
+def _true_repeat_period(autocorr: np.ndarray, t0: int) -> float:
+    """Return the true repeat period (sub-sample float) given the fundamental period t0.
+
+    Scans the autocorrelation at the fundamental lag and its 2×/3×/4× multiples (with a local
+    interpolated peak search at each, to absorb a slightly detuned sub-oscillator). Returns the
+    SMALLEST multiple whose correlation is within _SUBHARM_FRAC of the strongest — the fundamental
+    for a plain tone (all multiples correlate equally), a sub-octave when the fundamental lag
+    correlates markedly worse than 2×/4× it. See the block comment above _midi_to_period.
+    """
+    n = len(autocorr)
+
+    def peak_near(center: int) -> tuple[float, float] | None:
+        w = max(2, int(0.15 * center))
+        a, b = max(1, center - w), min(n - 2, center + w)
+        if b <= a:
+            return None
+        i = a + int(np.argmax(autocorr[a:b]))
+        ya, yb, yc = autocorr[i - 1], autocorr[i], autocorr[i + 1]
+        d = ya - 2.0 * yb + yc
+        frac = 0.5 * (ya - yc) / d if d != 0 else 0.0
+        return i + float(frac), float(yb)
+
+    cands: list[tuple[float, float]] = []
+    for k in range(1, _SUBHARM_MAX_K + 1):
+        center = int(round(k * t0))
+        if center >= n - 2:
+            break
+        pk = peak_near(center)
+        if pk is not None:
+            cands.append(pk)
+    if not cands:
+        return float(t0)
+    vmax = max(v for _, v in cands)
+    if vmax < _SUBHARM_MIN_AC:
+        return float(t0)
+    for period, v in cands:
+        if v >= _SUBHARM_FRAC * vmax:
+            return max(1.0, period)
+    return float(t0)
+
+
+def _detect_sub_multiple(
+    mono: np.ndarray,
+    sr: int,
+    region_start: int,
+    region_end: int,
+    hint_period: int,
+) -> int | None:
+    """Return the sub-octave multiple (2, 3 or 4) when the patch stacks an oscillator below the root.
+
+    Autocorrelates a sustain chunk and compares the fundamental lag with its 2×/3×/4× multiples. A
+    plain tone correlates equally at every multiple → None (no sub). A sub-octave correlates markedly
+    WORSE at the fundamental lag than at the multiple where it truly repeats (Grand Square C4:
+    ac@T≈0.77 vs ac@2T≈0.99, Combo Organ: ac@T≈−0.8) → that multiple. Returns None below
+    _SUBHARM_MIN_AC (aperiodic). This ONLY drives the loop-length quantization (see _exact_sub_period);
+    it deliberately does not feed the general period estimate, so nothing else in the pipeline moves.
+    """
+    chunk_len = min(region_end - region_start, max(int(0.5 * sr), 12 * hint_period))
+    mid = (region_start + region_end) // 2
+    chunk = mono[mid - chunk_len // 2 : mid + chunk_len // 2]
+    if len(chunk) < 64:
+        return None
+    chunk = chunk - chunk.mean()
+    n = len(chunk)
+    fft_c = np.fft.rfft(chunk, n=2 * n)
+    autocorr = np.fft.irfft(np.abs(fft_c) ** 2)[:n]
+    autocorr /= autocorr[0] + 1e-12
+
+    period = _true_repeat_period(autocorr, hint_period)
+    mult = int(round(period / hint_period))
+    if mult < 2:
+        return None
+    if float(autocorr[min(int(round(period)), n - 1)]) < 0.3:
+        return None
+    return mult
 
 
 def _detect_waveform_period(
@@ -833,6 +983,20 @@ def find_loop_candidates(
             s_r, e_r = _refine_period_candidate(mono, s, e - s, t_wave // 2)
             raw.append((s_r, e_r, 0.0, "waveform"))
 
+    # When the patch stacks a sub-octave, the loop length must be a whole number of SUB periods or it
+    # wraps mid-sub-cycle (audible reset). sub_period_exact is that length unit — the exact octave
+    # multiple of the fundamental from the known pitch — or None for plain tones. It re-quantizes the
+    # snapped length below; the rest of the pipeline (ranking, phase lock) stays on the fundamental
+    # t_wave, so non-sub sounds are byte-identical to before.
+    sub_period_exact = _exact_sub_period(mono, sr, region_start, region_end, midi_note, hint_period)
+    if sub_period_exact:
+        # Seed the pool with sub-period-length candidates at several starts. Re-quantizing a single
+        # fundamental-aligned pick to the sub grid can fail (no nearby sub multiple is level-continuous
+        # at that start); offering sub-aligned lengths at multiple starts lets the seam scorer find one
+        # that is both sub-locked and clean, instead of falling back to a fundamental-misaligned loop.
+        for s, e in _waveform_period_candidates(sr, int(round(sub_period_exact)), region_start, region_end):
+            raw.append((s, e, 0.0, "sub"))
+
     if tempo_bpm is not None:
         for s, e in _tempo_candidates(sr, tempo_bpm, region_start, region_end):
             raw.append((s, e, 0.0, "tempo"))
@@ -884,6 +1048,12 @@ def find_loop_candidates(
             # causing the mid-crossfade dip and a false click reading.
             s_snap = _snap_to_flat(mono, s, zc_radius, max(4, t_wave // 8))
             e_snap = _phase_lock_end(mono, s_snap, s_snap + (e - s), t_wave, lock_win)
+            if sub_period_exact:
+                # Sub-octave patch: snap to a whole number of exact sub-cycles. _phase_lock_end
+                # matches the dominant fundamental and can settle an ODD count of fundamental periods
+                # off (half a sub-cycle → audible reset). _snap_end_to_sub picks the sub-aligned
+                # length whose wrap is also level-continuous.
+                e_snap = _snap_end_to_sub(mono, s_snap, e_snap, sub_period_exact)
         else:
             rising = float(mono[min(s + 4, n - 1)]) > float(mono[max(s - 4, 0)])
             s_snap = _snap_to_slope_zero_crossing(mono, s, rising, zc_radius)
@@ -1095,6 +1265,12 @@ def central_fallback_loop(
         start = _snap_to_flat(mono, start, max(_ZC_SNAP_RADIUS, t_wave // 2), max(4, t_wave // 8))
         lock_win = max(2 * t_wave, int(0.012 * sr))
         end = _phase_lock_end(mono, start, start + loop_len, t_wave, lock_win)
+        # Sub-octave patches: force the loop onto a whole number of exact sub-cycles so the
+        # fundamental-matching phase lock can't settle half a sub-cycle off (audible reset). No-op
+        # for plain tones (no sub detected), so only sub-octave notes are affected.
+        sub_exact = _exact_sub_period(mono, sr, sustain_start, sustain_end, midi_note, hint)
+        if sub_exact:
+            end = _snap_end_to_sub(mono, start, end, sub_exact)
     else:
         end = start + loop_len
     if start < 1 or end <= start or end >= n:
