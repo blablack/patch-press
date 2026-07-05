@@ -23,6 +23,7 @@ from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
+from ..io.smpl import read_loop_points
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
 
@@ -597,6 +598,12 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str
     sset = SampleSet(name=subfolder.name, category=Category.SYNTH, samples=samples)
     sound_type = classify_sampleset(sset, workers=1)
     profile = _sound_type_to_profile(sound_type)
+
+    # Author-baked smpl loops are ground truth that the sound is meant to loop: trust them,
+    # skip our evolving-timbre gate, and never demote to pluck (a classifier "pluck" on a
+    # looped bass just means "short envelope" — the author still loops it → treat as synth).
+    if any(read_loop_points(wav) is not None for wav in candidates):
+        return ("synth" if profile == "pluck" else profile), None
 
     if profile != "pluck":
         non_loopable, seam = _is_non_loopable(samples, tempo_bpm=None)

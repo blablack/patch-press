@@ -123,10 +123,20 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     audio = sample.audio
     analysis = dict(sample.analysis)
 
+    # An authored loop (from a library WAV's smpl chunk) is ground truth: use it verbatim,
+    # skip loop detection, and skip the crossfade (done later in _bake_sample_loop). Its
+    # frames are raw-file indices, so trimming must not cut into it and must rebase it.
+    authored_loop = sample.loop_points if sample.metadata.get("authored_loop") else None
+
     # note_off is an index into the captured audio; trimming leading silence shifts it.
     note_off = sample.note_off
+    lead = 0
     if config.trim:
         lead, trail = trim_bounds(audio)
+        if authored_loop is not None:
+            # Never trim into the author's loop: keep everything from its start to its end.
+            lead = min(lead, authored_loop[0])
+            trail = max(trail, authored_loop[1])
         audio = AudioBuffer(data=audio.data[:, lead:trail], sample_rate=audio.sample_rate)
         if note_off is not None:
             note_off -= lead
@@ -138,8 +148,16 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         result = verify_pitch(audio, sample.note, config.pitch_tolerance_cents)
         analysis.update(result)
 
-    loop_points = sample.loop_points
-    if config.loop:
+    # Start from no loop: the only samples that arrive with loop_points already set are
+    # authored library WAVs, and those raw-file indices are invalid until rebased below
+    # (and must be dropped entirely if looping is disabled for this set).
+    loop_points = None
+    if config.loop and authored_loop is not None:
+        # Trust the author's loop: rebase raw-file frames onto the trimmed audio.
+        loop_points = (authored_loop[0] - lead, authored_loop[1] - lead)
+        analysis["loop_source"] = "authored_smpl"
+        analysis["loop_quality"] = None
+    elif config.loop:
         loop_cands = find_loop_candidates(audio, config.loop_quality_threshold, config.tempo_bpm, envelope=env, midi_note=sample.note)
         best_quality = loop_cands[0][1] if loop_cands else 0.0
         loop_found = False
@@ -204,6 +222,10 @@ def _bake_sample_loop(sample: Sample, crossfade_ms: float) -> Sample:
     longer crossfade, matching the original inline behaviour.
     """
     if sample.loop_points is None:
+        return sample
+    # An author-baked loop already loops cleanly by construction; a crossfade would only
+    # smear the seam the author chose. Ship it verbatim.
+    if sample.analysis.get("loop_source") == "authored_smpl":
         return sample
     ms = crossfade_ms * 2 if sample.analysis.get("loop_warning") == "fallback_central_region" else crossfade_ms
     if ms <= 0:

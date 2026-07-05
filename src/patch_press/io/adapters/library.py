@@ -4,12 +4,32 @@ from pathlib import Path
 from ...config.schema import LibrarySourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
+from ..smpl import read_loop_points
 
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 # Matches note+octave at end of stem, with optional _NNNN round-robin suffix.
 # Examples: A0, A#-1, C3_0001, F#2_0003
 _NOTE_RR_RE = re.compile(r"([A-G]#?)(-?\d+)(?:_(\d+))?$", re.IGNORECASE)
+
+
+def _make_sample(note: int, rr: int, wav: Path) -> Sample:
+    """Build a Sample, attaching the WAV's authored `smpl` loop when present.
+
+    When the file carries loop points, we trust them (loop_points set + an `authored_loop`
+    flag) so the pipeline ships the author's exact loop with no re-detection and no
+    crossfade. Frames are raw-file indices; the pipeline rebases them if it trims.
+    """
+    metadata = {"source_file": str(wav)}
+    loop = read_loop_points(wav)
+    if loop is not None:
+        metadata["authored_loop"] = True
+    return Sample(
+        note=note, velocity=100, round_robin=rr,
+        audio=AudioBuffer.from_file(wav),
+        loop_points=loop,
+        metadata=metadata,
+    )
 
 
 def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
@@ -68,17 +88,9 @@ class LibraryAdapter:
 
             if numbered:
                 for rr_idx, wav in sorted(numbered.items())[:max_round_robins]:
-                    samples.append(Sample(
-                        note=note, velocity=100, round_robin=rr_idx,
-                        audio=AudioBuffer.from_file(wav),
-                        metadata={"source_file": str(wav)},
-                    ))
+                    samples.append(_make_sample(note, rr_idx, wav))
             elif base:
-                samples.append(Sample(
-                    note=note, velocity=100, round_robin=1,
-                    audio=AudioBuffer.from_file(base),
-                    metadata={"source_file": str(base)},
-                ))
+                samples.append(_make_sample(note, 1, base))
 
         return SampleSet(
             name=name, category=Category.SYNTH,
