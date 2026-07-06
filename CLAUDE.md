@@ -21,6 +21,7 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
 |---|---|
 | `scan-from-probe <probe-dir> <config-dir>` | Analyse patch-probe YAMLs, write one config per preset |
 | `scan-library <folder> <config-dir>` | Write one YAML per subfolder of a sample library |
+| `scan-oneshots <folder> <config-dir>` | Write one YAML per WAV in a folder of single-note oneshot presets (e.g. Monosounds) |
 | `sample <config.yaml>` | Run the full pipeline for one config |
 | `batch <configs/*.yaml>` | Run all configs sequentially, skip existing outputs |
 
@@ -33,4 +34,5 @@ Four profiles exist: `synth` (melodic, full range), `pad` (sustained + evolving/
 - Source type drives behaviour: VST skips pitch verification, library keeps it
 - `scan-from-probe` re-renders each preset at `--probe-note` (default 60) to classify sustain type; `--quality low/medium/high` controls note step and capture duration
 - Library filenames: note+octave parsed anywhere in the stem (`Mini_Patch_A#0_0001.wav` → note A#0, RR 1); base files (no `_NNNN` suffix) ignored when numbered RRs exist for the same note
+- `scan-library` assumes one subfolder = one preset (multisample notes or a kit's per-instrument dirs). When a folder instead holds many loose single-note oneshot WAVs that are each their own preset (no shared notes to group by), use `scan-oneshots` on that folder instead — it writes one config per file, with the root note auto-detected via pitch tracking (since e.g. Monosounds filenames carry a pitch class but no octave) and pinned into `source.note`
 - Output is always Deluge format; `output.name` in the config sets the preset name; the SD card output directory is supplied via the CLI `--path` argument

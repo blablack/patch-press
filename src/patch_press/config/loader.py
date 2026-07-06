@@ -50,6 +50,7 @@ def load_config(path: Path) -> RunConfig:
         source = LibrarySourceConfig(
             path=Path(src["path"]),
             filename_pattern=src.get("filename_pattern"),
+            note=src.get("note"),
         )
     else:
         raise ValueError(f"Unknown source type: {src['type']!r}")

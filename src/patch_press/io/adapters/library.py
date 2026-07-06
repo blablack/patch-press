@@ -76,6 +76,8 @@ class LibraryAdapter:
         self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1, progress=None
     ) -> SampleSet:
         path = self._config.path
+        if path.is_file():
+            return self._load_single(name or path.stem, path, progress)
         sset_name = name or path.name
         wavs = sorted(path.glob("*.wav"))
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
@@ -93,6 +95,8 @@ class LibraryAdapter:
         a raw file/subfolder count that overshoots once thinning/capping kick in.
         """
         path = self._config.path
+        if path.is_file():
+            return 1
         wavs = sorted(path.glob("*.wav"))
         if wavs:
             total = 0
@@ -136,6 +140,22 @@ class LibraryAdapter:
         return SampleSet(
             name=name, category=Category.SYNTH,
             samples=samples, source_metadata={"path": str(path)},
+        )
+
+    def _load_single(self, name: str, wav: Path, progress=None) -> SampleSet:
+        """Build a one-sample SampleSet from a source pointed directly at a WAV file.
+
+        Used for oneshot-per-preset libraries (e.g. Monosounds) where each file is its
+        own patch rather than one note of a multisample. `note` is the root MIDI note
+        pinned by scan-oneshots (filenames there carry no octave to parse).
+        """
+        note = self._config.note if self._config.note is not None else 60
+        sample = _make_sample(note, 1, wav)
+        if progress is not None:
+            progress.update(1)
+        return SampleSet(
+            name=name, category=Category.SYNTH,
+            samples=[sample], source_metadata={"path": str(wav)},
         )
 
     def _load_kit(

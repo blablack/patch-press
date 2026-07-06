@@ -23,6 +23,10 @@ class CLAPSourceConfig:
 class LibrarySourceConfig:
     path: Path
     filename_pattern: Optional[str] = None
+    # Fixed MIDI root note for a single-file source (path points at one WAV, not a folder).
+    # Filenames in some libraries (e.g. Monosounds oneshots) carry no octave, so the note is
+    # detected once by the scan command and pinned here rather than re-parsed from the name.
+    note: Optional[int] = None
 
 
 @dataclass

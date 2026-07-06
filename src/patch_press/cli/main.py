@@ -29,6 +29,7 @@ from ..runner.scan import (
     scan_clap,
     scan_from_probe,
     scan_library,
+    scan_oneshots,
 )
 
 
@@ -156,6 +157,23 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
     print(
         f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
     )
+
+
+def cmd_scan_oneshots(args: argparse.Namespace) -> None:
+    summary = scan_oneshots(
+        folder=args.folder,
+        config_dir=args.config_dir,
+        profile=args.profile,
+        debug=args.debug,
+    )
+    print(
+        f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
+    )
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
+            print(f"  - {name}: {detail}")
 
 
 def cmd_classify(args: argparse.Namespace) -> None:
@@ -435,6 +453,24 @@ def main() -> None:
         help="Highest note to sample, e.g. C6 or C8 (default: C6)",
     )
 
+    # patch-press scan-oneshots "input/Monosounds/Minimoog Synth Oneshots" configs/Monosounds
+    scan_oneshots_p = sub.add_parser(
+        "scan-oneshots",
+        help="Generate one config per WAV in a folder of single-note oneshot presets (e.g. Monosounds)",
+    )
+    scan_oneshots_p.add_argument(
+        "folder", type=Path, help="Folder of loose oneshot WAV files (one preset per file)"
+    )
+    scan_oneshots_p.add_argument(
+        "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    scan_oneshots_p.add_argument(
+        "--profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
+    )
+
     # patch-press classify configs/*.yaml
     classify_p = sub.add_parser("classify", help="Print sound type for each preset without exporting")
     classify_p.add_argument(
@@ -485,6 +521,8 @@ def main() -> None:
         cmd_scan_clap(args)
     elif args.command == "scan-library":
         cmd_scan_library(args)
+    elif args.command == "scan-oneshots":
+        cmd_scan_oneshots(args)
     elif args.command == "classify":
         cmd_classify(args)
     elif args.command == "profiles":

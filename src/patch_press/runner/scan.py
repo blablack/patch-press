@@ -22,6 +22,7 @@ from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
+from ..analysis.pitch import detect_pitch, hz_to_midi
 from ..io.smpl import read_loop_points
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
@@ -662,6 +663,129 @@ def scan_library(
         if review_flag:
             summary.reviews.append(
                 (subfolder.name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=[review_flag]))
+            )
+
+    return summary
+
+
+_ONESHOT_NOTE_TOKEN_RE = re.compile(r"^([A-Ga-g])(#|b)?$")
+
+
+def _parse_note_letter(stem: str) -> int | None:
+    """Return the pitch class (0-11) from a standalone note-letter token in the filename.
+
+    Monosounds-style names carry the pitch class but no octave, e.g.
+    'Monosounds - Minimoog Bass - F - 016' → token 'F'. Splits on the same
+    separators the library uses (spaces/hyphens/underscores) and only matches a
+    token that is *exactly* a note letter, so words like the "Bass" in the name
+    itself are never mistaken for a note.
+    """
+    for token in re.split(r"[\s_-]+", stem):
+        m = _ONESHOT_NOTE_TOKEN_RE.match(token)
+        if m:
+            semi = _NOTE_NAMES.index(m.group(1).upper())
+            if m.group(2) == "#":
+                semi += 1
+            elif m.group(2) == "b":
+                semi -= 1
+            return semi % 12
+    return None
+
+
+def _detect_oneshot_note(audio: AudioBuffer, pitch_class: int | None) -> tuple[int, str | None]:
+    """Detect the recorded root note of a single-file oneshot, or fall back to C4.
+
+    Raw autocorrelation pitch detection can latch onto a harmonic instead of the
+    fundamental — confirmed on real Monosounds bass oneshots (~1/4 came back ~6+
+    octaves too high). When the filename gives a reliable pitch class (see
+    _parse_note_letter), constrain the answer to the nearest MIDI note that actually
+    matches that class instead of trusting the raw detected frequency's octave.
+    """
+    hz = detect_pitch(audio)
+    if hz is None:
+        if pitch_class is not None:
+            # Nearest note of the known class to middle C, as a plausible default.
+            candidates = [n for n in range(0, 128) if n % 12 == pitch_class]
+            return min(candidates, key=lambda n: abs(n - 60)), "pitch detection failed — verify root note/octave manually"
+        return 60, "pitch detection failed — defaulted to C4, verify root note manually"
+
+    if pitch_class is not None:
+        candidates = [n for n in range(0, 128) if n % 12 == pitch_class]
+        detected_midi = hz_to_midi(hz)
+        best = min(candidates, key=lambda n: abs(n - detected_midi))
+    else:
+        best = max(0, min(127, int(round(hz_to_midi(hz)))))
+
+    # The pitch-class constraint only fixes wrong-letter errors; autocorrelation can still
+    # latch onto a harmonic and return a frequency that's implausible for any instrument
+    # register (confirmed on real Monosounds bass oneshots — detected Hz pinned near the
+    # detector's 4000 Hz ceiling). Outside a generous playable range (C0..C8), don't trust
+    # the octave: flag it instead of silently shipping a note ~6+ octaves off.
+    if not 12 <= best <= 108:
+        return best, f"detected pitch implausible ({hz:.0f} Hz) — verify root note/octave manually"
+    return best, None
+
+
+def _detect_oneshot_profile(audio: AudioBuffer, note: int) -> str:
+    """Classify a single oneshot WAV's envelope into a profile.
+
+    Unlike _detect_folder_profile, there is only one note here, so the evolving-timbre
+    seam check (_is_non_loopable) can't run — it needs >=3 notes for a stable median.
+    """
+    sample = Sample(note=note, velocity=100, round_robin=1, audio=audio)
+    sset = SampleSet(name="oneshot", category=Category.SYNTH, samples=[sample])
+    sound_type = classify_sampleset(sset, workers=1)
+    return _sound_type_to_profile(sound_type)
+
+
+def scan_oneshots(
+    folder: Path,
+    config_dir: Path,
+    profile: str | None = None,
+    debug: bool = False,
+) -> ScanSummary:
+    """Generate one config per WAV in a folder of single-note oneshot presets.
+
+    For libraries like Monosounds: every subfolder holds many loose WAVs, each its own
+    preset at one fixed pitch — not round robins or notes of a shared multisample. The
+    root note (absent from the filename's octave-less pitch class) is auto-detected per
+    file via autocorrelation pitch tracking, and pinned into the generated config's
+    source.note so LibraryAdapter doesn't need to re-parse it from the name.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wavs = sorted(folder.glob("*.wav"))
+    if debug:
+        wavs = wavs[:30]
+    summary = ScanSummary(total=len(wavs))
+
+    for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
+        preset_name = wav.stem
+        audio = AudioBuffer.from_file(wav)
+        pitch_class = _parse_note_letter(preset_name)
+        note, note_flag = _detect_oneshot_note(audio, pitch_class)
+        preset_profile = profile if profile is not None else _detect_oneshot_profile(audio, note)
+
+        flags = [note_flag] if note_flag else []
+        review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
+        content = (
+            f"{review_line}"
+            f"source:\n"
+            f"  type: library\n"
+            f"  path: {wav}\n"
+            f"  note: {note}\n"
+            f"\n"
+            f"profile: {preset_profile}\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{preset_name}"\n'
+        )
+
+        out = config_dir / f"{_sanitize(preset_name)}.yaml"
+        out.write_text(content)
+        summary.written.append(out)
+        if flags:
+            summary.reviews.append(
+                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
             )
 
     return summary
