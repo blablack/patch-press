@@ -4,17 +4,18 @@ from pathlib import Path
 from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
 from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig
+from ..io.adapters.library import LibraryAdapter
 from .pipeline import run
 
 log = logging.getLogger(__name__)
 
 
 def _expected_notes(config: RunConfig) -> int:
-    """Best-effort count of samples a config will capture, for the shared progress total.
+    """Exact count of samples a config will capture, for the shared progress total.
 
-    Exact for VST/CLAP (the rendered note grid — the slow phase the bar tracks). For library
-    sources it's an estimate from the file/subdir count, reconciled when the samples actually
-    load; library capture is fast, so a small mismatch is only cosmetic.
+    VST/CLAP: the rendered note grid (the slow phase the bar tracks). Library: mirrors
+    the adapter's note-thinning + round-robin-capping so the total matches what
+    `capture()` actually produces.
     """
     cap = config.capture
     src = config.source
@@ -23,8 +24,7 @@ def _expected_notes(config: RunConfig) -> int:
         return len(range(lo, hi + 1, cap.note_step)) * len(cap.velocities) * cap.round_robins
     if isinstance(src, LibrarySourceConfig):
         try:
-            wavs = list(src.path.glob("*.wav"))
-            return len(wavs) or sum(1 for d in src.path.iterdir() if d.is_dir())
+            return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)
         except OSError:
             return 0
     return 0

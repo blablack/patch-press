@@ -169,15 +169,6 @@ def _features(mono: np.ndarray, sr: int, ls: int, le: int) -> dict:
         na, nb = np.linalg.norm(ma), np.linalg.norm(mb)
         static_spec = 1.0 - float(ma @ mb / (na * nb)) if na > 1e-9 and nb > 1e-9 else 0.0
 
-    # Crossfade phase-cancellation: RMS dip right at the wrap vs just around it.
-    dip = 0.0
-    w = int(0.012 * sr)
-    if wrap_positions and wrap_positions[0] - 2 * w > 0 and wrap_positions[0] + 2 * w < len(sig):
-        p = wrap_positions[0]
-        at = float(np.sqrt(np.mean(sig[p - w: p + w] ** 2)))
-        around = float(np.sqrt(np.mean(np.concatenate([sig[p - 2 * w: p - w], sig[p + w: p + 2 * w]]) ** 2)))
-        dip = (around - at) / (around + 1e-9)  # >0 means energy dips at the wrap
-
     return {
         "len_s": L / sr,
         "flux_ratio": flux_ratio,

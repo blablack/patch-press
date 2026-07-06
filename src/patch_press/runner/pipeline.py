@@ -45,12 +45,9 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             name=config.name or None,
             max_round_robins=config.capture.round_robins,
             note_step=config.capture.note_step,
+            progress=progress,
         )
         analysis = config.analysis
-        # Library capture reads files rather than rendering note-by-note, so advance the shared
-        # batch bar in one step by the number of samples loaded.
-        if progress is not None:
-            progress.update(len(sset.samples))
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")
 

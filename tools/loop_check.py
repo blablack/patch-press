@@ -58,7 +58,6 @@ from lxml import etree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from patch_press.analysis.loop import (  # noqa: E402
-    _AMP_DISC_THRESHOLD,
     _DERIV_DISC_THRESHOLD,
     _SLOPE_WINDOW,
     _amp_drift,

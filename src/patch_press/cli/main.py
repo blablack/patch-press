@@ -24,9 +24,7 @@ from ..runner.pipeline import classify as classify_run
 from ..runner.pipeline import run
 from ..runner.scan import (
     DEFAULT_DURATION_S,
-    DEFAULT_END_NOTE,
     DEFAULT_NOTE_STEP,
-    DEFAULT_START_NOTE,
     note_name_to_midi,
     scan_clap,
     scan_from_probe,

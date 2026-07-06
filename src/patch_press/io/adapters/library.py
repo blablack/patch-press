@@ -45,43 +45,80 @@ def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
     return midi, rr
 
 
+def _grouped_notes(wavs: list[Path], note_step: int = 1) -> dict[int, dict[int | None, Path]]:
+    """Group WAVs by parsed note → {rr_index_or_None: path}, thinned to at least
+    note_step semitones apart (greedy, low-to-high).
+
+    None key = base file (no RR suffix); numbered keys = round robins.
+    """
+    groups: dict[int, dict[int | None, Path]] = {}
+    for wav in wavs:
+        result = _parse_note_rr(wav.stem)
+        if result is None:
+            continue
+        note, rr = result
+        groups.setdefault(note, {})[rr] = wav
+
+    if note_step > 1:
+        thinned: list[int] = []
+        for note in sorted(groups):
+            if not thinned or note - thinned[-1] >= note_step:
+                thinned.append(note)
+        return {note: groups[note] for note in thinned}
+    return groups
+
+
 class LibraryAdapter:
     def __init__(self, config: LibrarySourceConfig):
         self._config = config
 
-    def capture(self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1) -> SampleSet:
+    def capture(
+        self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1, progress=None
+    ) -> SampleSet:
         path = self._config.path
         sset_name = name or path.name
         wavs = sorted(path.glob("*.wav"))
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
         if wavs:
-            return self._load_multisample(sset_name, path, wavs, max_round_robins, note_step)
+            return self._load_multisample(sset_name, path, wavs, max_round_robins, note_step, progress)
         if subdirs:
-            return self._load_kit(sset_name, path, subdirs, max_round_robins)
+            return self._load_kit(sset_name, path, subdirs, max_round_robins, progress)
         raise ValueError(f"No WAV files or subdirectories found in {path}")
 
-    def _load_multisample(self, name: str, path: Path, wavs: list[Path], max_round_robins: int = 1, note_step: int = 1) -> SampleSet:
-        # Group by note → {rr_index_or_None: path}
-        # None key = base file (no RR suffix); numbered keys = round robins
-        groups: dict[int, dict[int | None, Path]] = {}
-        for wav in wavs:
-            result = _parse_note_rr(wav.stem)
-            if result is None:
-                continue
-            note, rr = result
-            groups.setdefault(note, {})[rr] = wav
+    def expected_count(self, max_round_robins: int = 1, note_step: int = 1) -> int:
+        """Sample count `capture` will produce, without reading any audio.
 
-        # Thin notes to at least note_step semitones apart (greedy, low-to-high).
-        all_notes = sorted(groups)
-        if note_step > 1:
-            thinned: list[int] = []
-            for note in all_notes:
-                if not thinned or note - thinned[-1] >= note_step:
-                    thinned.append(note)
-            all_notes = thinned
+        Mirrors the note-thinning + round-robin-capping below so callers (the batch
+        progress bar) can size a total that matches the work actually done, instead of
+        a raw file/subfolder count that overshoots once thinning/capping kick in.
+        """
+        path = self._config.path
+        wavs = sorted(path.glob("*.wav"))
+        if wavs:
+            total = 0
+            for files in _grouped_notes(wavs, note_step).values():
+                numbered = [k for k in files if k is not None]
+                if numbered:
+                    total += min(len(numbered), max_round_robins)
+                elif None in files:
+                    total += 1
+            return total
+        subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
+        return sum(min(len(list(d.glob("*.wav"))), max_round_robins) for d in subdirs)
+
+    def _load_multisample(
+        self,
+        name: str,
+        path: Path,
+        wavs: list[Path],
+        max_round_robins: int = 1,
+        note_step: int = 1,
+        progress=None,
+    ) -> SampleSet:
+        groups = _grouped_notes(wavs, note_step)
 
         samples: list[Sample] = []
-        for note in all_notes:
+        for note in sorted(groups):
             files = groups[note]
             numbered = {k: v for k, v in files.items() if k is not None}
             base = files.get(None)
@@ -89,15 +126,21 @@ class LibraryAdapter:
             if numbered:
                 for rr_idx, wav in sorted(numbered.items())[:max_round_robins]:
                     samples.append(_make_sample(note, rr_idx, wav))
+                    if progress is not None:
+                        progress.update(1)
             elif base:
                 samples.append(_make_sample(note, 1, base))
+                if progress is not None:
+                    progress.update(1)
 
         return SampleSet(
             name=name, category=Category.SYNTH,
             samples=samples, source_metadata={"path": str(path)},
         )
 
-    def _load_kit(self, name: str, path: Path, subdirs: list[Path], max_round_robins: int = 1) -> SampleSet:
+    def _load_kit(
+        self, name: str, path: Path, subdirs: list[Path], max_round_robins: int = 1, progress=None
+    ) -> SampleSet:
         samples: list[Sample] = []
         for subdir in subdirs:
             wavs = sorted(subdir.glob("*.wav"))
@@ -109,6 +152,8 @@ class LibraryAdapter:
                     audio=AudioBuffer.from_file(wav),
                     metadata={"source_file": str(wav), "instrument": subdir.name},
                 ))
+                if progress is not None:
+                    progress.update(1)
         samples.sort(key=lambda s: (s.note, s.round_robin))
         return SampleSet(
             name=name, category=Category.DRUM,

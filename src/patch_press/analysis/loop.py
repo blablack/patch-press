@@ -586,13 +586,24 @@ def _boundary_components(
     return {"chroma": chroma, "amp_score": amp_score, "slope_score": slope_score, "score": score}
 
 
+def _seam_disc(mono: np.ndarray, start: int, end: int) -> tuple[float, float]:
+    """Raw amp/deriv discontinuity at the seam mono[end-1] -> mono[start], on RAW pre-crossfade audio.
+
+    The loop crossfade manufactures a smooth seam by construction, so checking the baked audio
+    passes anything — this must run on the raw signal. amp_disc is the residual value step at
+    the wrap; deriv_disc uses _seam_slopes (same-direction) so a phase-aligned loop spliced on a
+    waveform apex is not mistaken for a click. end is exclusive (Deluge convention): the loop
+    plays [start, end), so the last sample before jumping back is mono[end-1].
+    """
+    peak = float(np.abs(mono).max()) or 1.0
+    amp_disc = abs(float(mono[end - 1]) - float(mono[start])) / peak
+    slope_start, slope_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
+    deriv_disc = abs(slope_end - slope_start) / (2.0 * peak)
+    return amp_disc, deriv_disc
+
+
 def validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> str:
     """Return empty string if the splice is clean, else a description of the failing check.
-
-    Validate on the RAW (pre-crossfade) audio: the loop crossfade manufactures a smooth seam
-    by construction, so checking the baked audio passes anything. amp_disc is the residual
-    value step at the wrap; deriv_disc uses _seam_slopes (same-direction) so a phase-aligned
-    loop spliced on a waveform apex is not mistaken for a click.
 
     end is treated as exclusive: the loop plays [start, end), so the last sample
     before jumping back is mono[end-1]. After zero-crossing snap with the +1 shift
@@ -600,10 +611,7 @@ def validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> s
     """
     if start < 1 or end < 2 or end >= len(mono):
         return "out of bounds"
-    peak = float(np.abs(mono).max()) or 1.0
-    amp_disc = abs(float(mono[end - 1]) - float(mono[start])) / peak
-    slope_start, slope_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
-    deriv_disc = abs(slope_end - slope_start) / (2.0 * peak)
+    amp_disc, deriv_disc = _seam_disc(mono, start, end)
     if amp_disc >= _AMP_DISC_THRESHOLD:
         return f"amp_disc={amp_disc:.3f} (threshold {_AMP_DISC_THRESHOLD})"
     if deriv_disc >= _DERIV_DISC_THRESHOLD:
@@ -815,15 +823,6 @@ def _rms_depth_region(mono: np.ndarray, start: int, end: int) -> float:
         return 0.0
     m = float(seg.mean())
     return float((seg.max() - seg.min()) / m) if m > 1e-6 else 0.0
-
-
-def _seam_disc(mono: np.ndarray, start: int, end: int) -> tuple[float, float]:
-    """Raw amp/deriv discontinuity at the seam — mirrors validate_splice_reason."""
-    peak = float(np.abs(mono).max()) or 1.0
-    amp_disc = abs(float(mono[end - 1]) - float(mono[start])) / peak
-    slope_start, slope_end = _seam_slopes(mono, start, end, _SLOPE_WINDOW)
-    deriv_disc = abs(slope_end - slope_start) / (2.0 * peak)
-    return amp_disc, deriv_disc
 
 
 def _period_aligned_loop(

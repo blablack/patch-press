@@ -192,7 +192,6 @@ def _process_note(wav: Path, ls: int, le: int, note: int | None, tempo: float,
     mono = buf.to_mono()
     n = len(mono)
     peak_rms = float(np.sqrt(np.mean(mono**2))) or 1.0
-    peak = float(np.abs(mono).max()) or 1.0
     W = _carrier_W(note, sr)
 
     env = analyze_envelope(buf, bpm=tempo)

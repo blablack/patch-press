@@ -13,7 +13,6 @@ log = logging.getLogger(__name__)
 
 from ..analysis.pipeline import classify_sampleset
 from ..analysis.probe import (
-    LONG_HOLD_S,
     SHORT_HOLD_S,
     ProbeResult,
     classify_sustain_type,
@@ -171,21 +170,17 @@ def _sanitize(name: str) -> str:
     return s.strip("_")
 
 
-def _write_config(
+def _config_yaml(
     preset_name: str,
-    plugin_path: Path,
+    source_lines: str,
     result: ProbeResult,
-    config_dir: Path,
-    plugin_stem: str,
     profile: str,
     note_step: int,
     note_lo: int,
     note_hi: int,
-    raw_state: str | None = None,
-    sample_rate: int = 48000,
-) -> Path:
-    safe_name = _sanitize(preset_name)
-
+    sample_rate: int,
+) -> str:
+    """Render the shared body of a scan-generated config YAML around a source-specific block."""
     review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
 
     meta = f"confidence={result.confidence}"
@@ -196,15 +191,11 @@ def _write_config(
     note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
     sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
-    raw_state_line = f'  raw_state: "{raw_state}"\n' if raw_state else ""
-    content = (
+    return (
         f"{review_line}"
         f"# {meta}\n"
         f"source:\n"
-        f"  type: vst\n"
-        f"  plugin: {plugin_path}\n"
-        f'  preset: "{preset_name}"\n'
-        f"{raw_state_line}"
+        f"{source_lines}"
         f"\n"
         f"profile: {profile}\n"
         f"\n"
@@ -219,7 +210,29 @@ def _write_config(
         f'  name: "{preset_name}"\n'
     )
 
-    out = config_dir / f"{safe_name}.yaml"
+
+def _write_config(
+    preset_name: str,
+    plugin_path: Path,
+    result: ProbeResult,
+    config_dir: Path,
+    plugin_stem: str,
+    profile: str,
+    note_step: int,
+    note_lo: int,
+    note_hi: int,
+    raw_state: str | None = None,
+    sample_rate: int = 48000,
+) -> Path:
+    raw_state_line = f'  raw_state: "{raw_state}"\n' if raw_state else ""
+    source_lines = (
+        f"  type: vst\n"
+        f"  plugin: {plugin_path}\n"
+        f'  preset: "{preset_name}"\n'
+        f"{raw_state_line}"
+    )
+    content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
+    out = config_dir / f"{_sanitize(preset_name)}.yaml"
     out.write_text(content)
     return out
 
@@ -233,6 +246,69 @@ def _parse_probe_yaml(yaml_path: Path) -> tuple[str, VSTSourceConfig]:
         raw_state=src.get("raw_state"),
     )
     return src["preset"], cfg
+
+
+def _probe_and_classify_preset(
+    adapter,
+    preset_name: str,
+    probe_note: int,
+    probe_velocity: int,
+    long_hold_s: float,
+    total_s: float,
+    sample_rate: int,
+    sustain_duration_s: float,
+    profile: str | None,
+    tempo_bpm: float,
+) -> tuple[ProbeResult, str, AudioBuffer]:
+    """Render, probe and pick a profile for one preset. Returns (result, preset_profile, long_audio).
+
+    long_audio is returned for callers (scan_from_probe) that need it for a raw_state
+    switching sanity check; scan_clap ignores it.
+    """
+    adapter._apply_preset(preset_name)
+    short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, total_s, sample_rate=sample_rate)
+    long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, total_s, sample_rate=sample_rate)
+
+    sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
+    result = probe(long_audio, long_hold_s, sustains_hint=sustains)
+    if result.sustains:
+        result = replace(
+            result,
+            duration_s=sustain_duration_s,
+            release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
+        )
+
+    if profile is not None:
+        preset_profile = profile
+    elif not sustains:
+        # Sound decays while held → pluck; no need to run classify_sampleset
+        tqdm.write(f"  {preset_name}: Pluck (decay-while-held)")
+        preset_profile = "pluck"
+    else:
+        classify_samples = [
+            Sample(
+                note=n,
+                velocity=probe_velocity,
+                round_robin=1,
+                audio=adapter.render_note(n, probe_velocity, long_hold_s, total_s, sample_rate=sample_rate),
+                note_off=int(long_hold_s * sample_rate),
+            )
+            for n in _CLASSIFY_NOTES
+        ]
+        classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
+        sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
+        tqdm.write(f"  {preset_name}: {sound_type}")
+        preset_profile = _sound_type_to_profile(sound_type)
+        # A sustained but continuously-evolving timbre (swept filter) has no seamless loop —
+        # disable looping (captured one-shot at its full sustain length) and flag for review.
+        if preset_profile != "pluck":
+            non_loopable, seam = _is_non_loopable(classify_samples, tempo_bpm)
+            if non_loopable:
+                preset_profile = "pluck"
+                result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
+                tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
+
+    return result, preset_profile, long_audio
 
 
 def scan_from_probe(
@@ -285,9 +361,18 @@ def scan_from_probe(
     _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
-        adapter._apply_preset(preset_name)
-        short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
-        long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate)
+        result, preset_profile, long_audio = _probe_and_classify_preset(
+            adapter,
+            preset_name,
+            probe_note,
+            probe_velocity,
+            long_hold_s,
+            _total_s,
+            sample_rate,
+            sustain_duration_s,
+            profile,
+            tempo_bpm,
+        )
 
         if not _switching_verified:
             if _prev_audio is None:
@@ -302,44 +387,6 @@ def scan_from_probe(
                     )
                 _switching_verified = True
 
-        sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
-        result = probe(long_audio, long_hold_s, sustains_hint=sustains)
-        if result.sustains:
-            result = replace(
-                result,
-                duration_s=sustain_duration_s,
-                release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
-            )
-
-        if profile is not None:
-            preset_profile = profile
-        elif not sustains:
-            # Sound decays while held → pluck; no need to run classify_sampleset
-            tqdm.write(f"  {preset_name}: Pluck (decay-while-held)")
-            preset_profile = "pluck"
-        else:
-            classify_samples = [
-                Sample(
-                    note=n,
-                    velocity=probe_velocity,
-                    round_robin=1,
-                    audio=adapter.render_note(n, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate),
-                    note_off=int(long_hold_s * sample_rate),
-                )
-                for n in _CLASSIFY_NOTES
-            ]
-            classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
-            sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
-            tqdm.write(f"  {preset_name}: {sound_type}")
-            preset_profile = _sound_type_to_profile(sound_type)
-            # A sustained but continuously-evolving timbre (swept filter) has no seamless loop —
-            # disable looping (captured one-shot at its full sustain length) and flag for review.
-            if preset_profile != "pluck":
-                non_loopable, seam = _is_non_loopable(classify_samples, tempo_bpm)
-                if non_loopable:
-                    preset_profile = "pluck"
-                    result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
-                    tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
         path = _write_config(
             preset_name,
             plugin_path,
@@ -373,37 +420,15 @@ def _write_clap_config(
     note_hi: int,
     sample_rate: int = 48000,
 ) -> Path:
-    safe_name = _sanitize(preset_name)
-    review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
-    meta = f"confidence={result.confidence}"
-    meta += f" sustains={'yes' if result.sustains else 'no'}"
-    meta += f" release={result.release_tail_s:.1f}s"
-    note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
-    note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
-    sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
-    content = (
-        f"{review_line}"
-        f"# {meta}\n"
-        f"source:\n"
+    source_lines = (
         f"  type: clap\n"
         f"  plugin: {plugin_path}\n"
         f"  plugin_id: {plugin_id}\n"
         f'  preset: "{preset_name}"\n'
         f"  preset_path: {preset_path}\n"
-        f"\n"
-        f"profile: {profile}\n"
-        f"\n"
-        f"capture:\n"
-        f"{sample_rate_line}"
-        f"{note_range_line}"
-        f"{note_step_line}"
-        f"  duration_s: {result.duration_s}\n"
-        f"  release_tail_s: {result.release_tail_s}\n"
-        f"\n"
-        f"output:\n"
-        f'  name: "{preset_name}"\n'
     )
-    out = config_dir / f"{safe_name}.yaml"
+    content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
+    out = config_dir / f"{_sanitize(preset_name)}.yaml"
     out.write_text(content)
     return out
 
@@ -485,47 +510,18 @@ def scan_clap(
     _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
-        adapter._apply_preset(preset_name)
-        short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, _total_s, sample_rate=sample_rate)
-        long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate)
-
-        sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
-        result = probe(long_audio, long_hold_s, sustains_hint=sustains)
-        if result.sustains:
-            result = replace(
-                result,
-                duration_s=sustain_duration_s,
-                release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
-            )
-
-        if profile is not None:
-            preset_profile = profile
-        elif not sustains:
-            tqdm.write(f"  {preset_name}: Pluck (decay-while-held)")
-            preset_profile = "pluck"
-        else:
-            classify_samples = [
-                Sample(
-                    note=n,
-                    velocity=probe_velocity,
-                    round_robin=1,
-                    audio=adapter.render_note(n, probe_velocity, long_hold_s, _total_s, sample_rate=sample_rate),
-                    note_off=int(long_hold_s * sample_rate),
-                )
-                for n in _CLASSIFY_NOTES
-            ]
-            classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
-            sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
-            tqdm.write(f"  {preset_name}: {sound_type}")
-            preset_profile = _sound_type_to_profile(sound_type)
-            # A sustained but continuously-evolving timbre (swept filter) has no seamless loop —
-            # disable looping (captured one-shot at its full sustain length) and flag for review.
-            if preset_profile != "pluck":
-                non_loopable, seam = _is_non_loopable(classify_samples, tempo_bpm)
-                if non_loopable:
-                    preset_profile = "pluck"
-                    result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
-                    tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
+        result, preset_profile, _long_audio = _probe_and_classify_preset(
+            adapter,
+            preset_name,
+            probe_note,
+            probe_velocity,
+            long_hold_s,
+            _total_s,
+            sample_rate,
+            sustain_duration_s,
+            profile,
+            tempo_bpm,
+        )
 
         path = _write_clap_config(
             preset_name,
