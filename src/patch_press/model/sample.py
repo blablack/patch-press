@@ -8,6 +8,7 @@ from .audio import AudioBuffer
 class Category(str, Enum):
     SYNTH = "synth"
     DRUM = "drum"
+    WAVETABLE = "wavetable"
 
 
 @dataclass

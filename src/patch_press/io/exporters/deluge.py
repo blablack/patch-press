@@ -1,3 +1,4 @@
+import shutil
 import wave
 from collections import defaultdict
 from pathlib import Path
@@ -34,9 +35,27 @@ def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int],
         else:
             fname = f"note{s.note:03d}_T{bpm:03d}_V{s.velocity:03d}_RR{s.round_robin}.wav"
         p = output_dir / fname
-        sf.write(str(p), s.audio.data.T, s.audio.sample_rate)
+        if sset.category == Category.WAVETABLE:
+            # Copy the raw bytes rather than decode/re-encode: the file is unmodified
+            # by design (see WavetableAdapter), and re-encoding through soundfile risks
+            # dropping the Serum `clm` metadata chunk the firmware may read.
+            shutil.copy2(s.metadata["source_file"], p)
+        else:
+            sf.write(str(p), s.audio.data.T, s.audio.sample_rate)
         paths[(s.note, s.velocity, s.round_robin)] = p
     return paths
+
+
+def _q31(frac: float) -> str:
+    """Encode a 0..1 fraction as the Deluge's signed-32-bit param range.
+
+    Cross-checked against existing template constants: lpfResonance=0x80000000 (off,
+    frac=0), lpfFrequency=0x7FFFFFFF (wide open, frac=1), oscAVolume=0x19999999
+    (frac~0.6) — all fit raw = round(-2**31 + frac*(2**32-1)).
+    """
+    frac = max(0.0, min(1.0, frac))
+    raw = round(-(2**31) + frac * (2**32 - 1))
+    return f"0x{raw & 0xFFFFFFFF:08X}"
 
 
 def _zone_el(parent, path: Path, sample: Sample) -> None:
@@ -47,11 +66,13 @@ def _zone_el(parent, path: Path, sample: Sample) -> None:
     etree.SubElement(parent, "zone", **kw)
 
 
-def _patch_cables(parent) -> None:
+def _patch_cables(parent, extra: list[tuple[str, str, str]] | None = None) -> None:
     cables = etree.SubElement(parent, "patchCables")
     etree.SubElement(cables, "patchCable", source="velocity", destination="volume", amount="0x3FFFFFE8")
     etree.SubElement(cables, "patchCable", source="aftertouch", destination="volume", amount="0x2A3D7094")
     etree.SubElement(cables, "patchCable", source="y", destination="lpfFrequency", amount="0x19999990")
+    for source, destination, amount in extra or []:
+        etree.SubElement(cables, "patchCable", source=source, destination=destination, amount=amount)
 
 
 def _write_xml(root, path: Path) -> None:
@@ -68,6 +89,8 @@ class DelugeExporter:
 
         if sset.category == Category.DRUM:
             self._export_kit(sset, wav_paths, xml_path)
+        elif sset.category == Category.WAVETABLE:
+            self._export_wavetable(sset, wav_paths, xml_path)
         else:
             self._export_multisample(sset, wav_paths, xml_path)
 
@@ -163,6 +186,91 @@ class DelugeExporter:
         etree.SubElement(dp, "envelope1", attack="0x80000000", decay="0xE6666654", sustain="0x7FFFFFFF", release="0x02000000")
         etree.SubElement(dp, "envelope2", attack="0xE6666654", decay="0xE6666654", sustain="0xFFFFFFE9", release="0xE6666654")
         _patch_cables(dp)
+        etree.SubElement(
+            dp, "equalizer", bass="0x00000000", treble="0x00000000", bassFrequency="0x00000000", trebleFrequency="0x00000000"
+        )
+        etree.SubElement(sound, "arpeggiator", mode="off", numOctaves="2", syncLevel="7")
+
+        _write_xml(sound, xml_path)
+
+    # ------------------------------------------------------------------
+    def _export_wavetable(
+        self,
+        sset: SampleSet,
+        wav_paths: dict[tuple[int, int, int], Path],
+        xml_path: Path,
+    ) -> None:
+        """A single wavetable oscillator, driven by the archetype scan_wavetables chose.
+
+        Confirmed against the Deluge firmware source (processing/sound/sound.cpp,
+        modulation/params/param.cpp): a single-file wavetable osc is a flat `type=
+        "wavetable"` element (no zone/loopMode — those are sample-only), the scan
+        position is the `oscAWavetablePosition` defaultParams attribute, and LFO2→
+        position is just another patchCable to that same destination string.
+        """
+        s = sset.samples[0]
+        wav = wav_paths[(s.note, s.velocity, s.round_robin)]
+        wt = sset.source_metadata["wavetable"]
+
+        sound = etree.Element(
+            "sound",
+            firmwareVersion=_FIRMWARE,
+            earliestCompatibleFirmware=_MIN_FIRMWARE,
+            polyphonic="poly",
+            voicePriority="1",
+            mode="subtractive",
+            lpfMode="24dB",
+            modFXType="none",
+        )
+        etree.SubElement(
+            sound, "osc1", type="wavetable", transpose="0", cents="0", retrigPhase="-1",
+            fileName=_deluge_path(wav),
+        )
+        etree.SubElement(sound, "osc2", type="square", transpose="0", cents="0", retrigPhase="-1")
+        etree.SubElement(sound, "lfo1", type="triangle", syncLevel="0")
+        etree.SubElement(sound, "lfo2", type="triangle", syncLevel="0")
+        etree.SubElement(sound, "unison", num="1", detune="8")
+        etree.SubElement(sound, "delay", pingPong="1", analog="0", syncLevel="7")
+        etree.SubElement(sound, "compressor", syncLevel="6", attack="327244", release="936")
+
+        dp = etree.SubElement(
+            sound,
+            "defaultParams",
+            arpeggiatorGate="0x00000000",
+            portamento="0x80000000",
+            compressorShape="0xDC28F5B2",
+            oscAVolume=_q31(1.0),
+            oscAPulseWidth="0x00000000",
+            oscAWavetablePosition=_q31(wt.wt_position),
+            oscBVolume=_q31(0.0),
+            oscBPulseWidth="0x00000000",
+            noiseVolume="0x80000000",
+            volume="0x4CCCCCA8",
+            pan="0x00000000",
+            lpfFrequency=_q31(wt.filter_cutoff),
+            lpfResonance="0x80000000",
+            hpfFrequency="0x80000000",
+            hpfResonance="0x80000000",
+            lfo1Rate="0x1999997E",
+            lfo2Rate=_q31(wt.lfo2_rate),
+            modFXRate="0x00000000",
+            modFXDepth="0x00000000",
+            delayRate="0x00000000",
+            delayFeedback="0x80000000",
+            reverbAmount="0x80000000",
+            arpeggiatorRate="0x00000000",
+            stutterRate="0x00000000",
+            sampleRateReduction="0x80000000",
+            bitCrush="0x80000000",
+            modFXOffset="0x00000000",
+            modFXFeedback="0x00000000",
+        )
+        etree.SubElement(
+            dp, "envelope1",
+            attack=_q31(wt.attack), decay=_q31(wt.decay), sustain=_q31(wt.sustain), release=_q31(wt.release),
+        )
+        etree.SubElement(dp, "envelope2", attack="0xE6666654", decay="0xE6666654", sustain="0xFFFFFFE9", release="0xE6666654")
+        _patch_cables(dp, extra=[("lfo2", "oscAWavetablePosition", _q31(wt.lfo2_depth))])
         etree.SubElement(
             dp, "equalizer", bass="0x00000000", treble="0x00000000", bassFrequency="0x00000000", trebleFrequency="0x00000000"
         )

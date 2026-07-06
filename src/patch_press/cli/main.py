@@ -30,6 +30,7 @@ from ..runner.scan import (
     scan_from_probe,
     scan_library,
     scan_oneshots,
+    scan_wavetables,
 )
 
 
@@ -164,6 +165,23 @@ def cmd_scan_oneshots(args: argparse.Namespace) -> None:
         folder=args.folder,
         config_dir=args.config_dir,
         profile=args.profile,
+        debug=args.debug,
+    )
+    print(
+        f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
+    )
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
+            print(f"  - {name}: {detail}")
+
+
+def cmd_scan_wavetables(args: argparse.Namespace) -> None:
+    summary = scan_wavetables(
+        folder=args.folder,
+        config_dir=args.config_dir,
+        archetype=args.archetype,
         debug=args.debug,
     )
     print(
@@ -471,6 +489,24 @@ def main() -> None:
         help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
     )
 
+    # patch-press scan-wavetables "input/Echo Sound Works Core Tables/Basics" configs/EchoTables
+    scan_wavetables_p = sub.add_parser(
+        "scan-wavetables",
+        help="Generate one config per WAV in a folder of Serum-format wavetable files",
+    )
+    scan_wavetables_p.add_argument(
+        "folder", type=Path, help="Folder of wavetable WAV files (one preset per file)"
+    )
+    scan_wavetables_p.add_argument(
+        "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    scan_wavetables_p.add_argument(
+        "--archetype",
+        choices=["pad", "pluck", "bass", "lead", "drone", "evolving_pad"],
+        default=None,
+        help="Override auto-detected archetype; default: auto (spectral analysis per file)",
+    )
+
     # patch-press classify configs/*.yaml
     classify_p = sub.add_parser("classify", help="Print sound type for each preset without exporting")
     classify_p.add_argument(
@@ -523,6 +559,8 @@ def main() -> None:
         cmd_scan_library(args)
     elif args.command == "scan-oneshots":
         cmd_scan_oneshots(args)
+    elif args.command == "scan-wavetables":
+        cmd_scan_wavetables(args)
     elif args.command == "classify":
         cmd_classify(args)
     elif args.command == "profiles":

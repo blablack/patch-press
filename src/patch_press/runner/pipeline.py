@@ -7,10 +7,17 @@ import soundfile as sf
 from ..analysis.normalize import normalize_sample
 from ..analysis.pipeline import analyze_sampleset, classify_sampleset
 from ..analysis.trim import trim_silence
-from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig
+from ..config.schema import (
+    CLAPSourceConfig,
+    LibrarySourceConfig,
+    RunConfig,
+    VSTSourceConfig,
+    WavetableSourceConfig,
+)
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.adapters.vst import VSTAdapter
+from ..io.adapters.wavetable import WavetableAdapter
 from ..io.exporters.deluge import DelugeExporter
 
 log = logging.getLogger(__name__)
@@ -21,6 +28,20 @@ _EXPORTERS = {
 
 
 def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1, progress=None) -> Path:
+    if isinstance(config.source, WavetableSourceConfig):
+        # A wavetable isn't a captured performance — it ships to the SD card
+        # byte-for-byte, so skip analyze_sampleset (trim/envelope/loop/normalize)
+        # entirely and go straight to export. See io/adapters/wavetable.py.
+        adapter = WavetableAdapter(config.source)
+        sset = adapter.capture(name=config.name or None)
+        sset.source_metadata["wavetable"] = config.wavetable
+        exporter_cls = _EXPORTERS.get(output_format)
+        if exporter_cls is None:
+            raise ValueError(f"Unknown output format: {output_format!r}. Available: {list(_EXPORTERS)}")
+        if progress is not None:
+            progress.update(1)
+        return exporter_cls().export(sset, config.output, output_path)
+
     if isinstance(config.source, VSTSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = VSTAdapter(config.source)

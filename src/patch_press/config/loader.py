@@ -11,6 +11,8 @@ from .schema import (
     OutputConfig,
     RunConfig,
     VSTSourceConfig,
+    WavetableConfig,
+    WavetableSourceConfig,
 )
 
 
@@ -52,6 +54,8 @@ def load_config(path: Path) -> RunConfig:
             filename_pattern=src.get("filename_pattern"),
             note=src.get("note"),
         )
+    elif src["type"] == "wavetable":
+        source = WavetableSourceConfig(path=Path(src["path"]))
     else:
         raise ValueError(f"Unknown source type: {src['type']!r}")
 
@@ -85,6 +89,24 @@ def load_config(path: Path) -> RunConfig:
         name=out["name"],
     )
 
+    wt = raw.get("wavetable")
+    wavetable = (
+        WavetableConfig(
+            archetype=wt["archetype"],
+            wt_position=wt["wt_position"],
+            lfo2_rate=wt["lfo2_rate"],
+            lfo2_depth=wt["lfo2_depth"],
+            filter_cutoff=wt["filter_cutoff"],
+            attack=wt["attack"],
+            decay=wt["decay"],
+            sustain=wt["sustain"],
+            release=wt["release"],
+            filter_type=wt.get("filter_type", "lpf"),
+        )
+        if wt is not None
+        else None
+    )
+
     return RunConfig(
         source=source,
         capture=capture,
@@ -92,4 +114,5 @@ def load_config(path: Path) -> RunConfig:
         output=output,
         name=raw.get("name", output.name),
         category=raw.get("category", "synth"),
+        wavetable=wavetable,
     )

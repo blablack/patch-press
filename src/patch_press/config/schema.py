@@ -30,6 +30,32 @@ class LibrarySourceConfig:
 
 
 @dataclass
+class WavetableSourceConfig:
+    path: Path
+
+
+@dataclass
+class WavetableConfig:
+    """Archetype-driven Deluge patch parameters for a wavetable, resolved once at scan
+    time (see runner/scan.py:scan_wavetables) from the file's own spectral content —
+    see docs/research/wavetable.md. Everything here is a plain 0..1 fraction except
+    archetype/filter_type; the exporter's _q31() spreads fractions across the Deluge's
+    signed-32-bit param range.
+    """
+
+    archetype: str  # pad | pluck | bass | lead | drone | evolving_pad
+    wt_position: float
+    lfo2_rate: float
+    lfo2_depth: float
+    filter_cutoff: float
+    attack: float
+    decay: float
+    sustain: float
+    release: float
+    filter_type: str = "lpf"
+
+
+@dataclass
 class CaptureConfig:
     note_range: tuple[int, int] = (36, 96)
     note_step: int = 3
@@ -65,9 +91,10 @@ class OutputConfig:
 
 @dataclass
 class RunConfig:
-    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig]
+    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig, WavetableSourceConfig]
     capture: CaptureConfig
     analysis: AnalysisConfig
     output: OutputConfig
     name: str = ""
     category: str = "synth"
+    wavetable: Optional[WavetableConfig] = None

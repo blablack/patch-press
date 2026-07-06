@@ -23,6 +23,7 @@ from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..analysis.pitch import detect_pitch, hz_to_midi
+from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..io.smpl import read_loop_points
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
@@ -786,6 +787,69 @@ def scan_oneshots(
         if flags:
             summary.reviews.append(
                 (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
+            )
+
+    return summary
+
+
+def scan_wavetables(
+    folder: Path,
+    config_dir: Path,
+    archetype: str | None = None,
+    debug: bool = False,
+) -> ScanSummary:
+    """Generate one config per WAV in a folder of Serum-format wavetable files.
+
+    Each file's own spectral content picks its archetype (envelope/filter shape) and
+    two continuous parameters (WT scan start position, LFO2-depth) — see
+    analysis/wavetable.py and docs/research/wavetable.md. Files are shipped to the SD
+    card unmodified; nothing here mutates the audio.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wavs = sorted(folder.glob("*.wav"))
+    if debug:
+        wavs = wavs[:30]
+    summary = ScanSummary(total=len(wavs))
+
+    for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
+        preset_name = wav.stem
+        audio = AudioBuffer.from_file(wav)
+        result = classify_archetype(audio)
+        if archetype is not None:
+            t = _ARCHETYPES[archetype]
+            result.archetype = archetype
+            result.attack, result.decay, result.sustain, result.release = t["attack"], t["decay"], t["sustain"], t["release"]
+            result.filter_type = t["filter_type"]
+
+        review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
+        content = (
+            f"{review_line}"
+            f"source:\n"
+            f"  type: wavetable\n"
+            f"  path: {wav}\n"
+            f"\n"
+            f"wavetable:\n"
+            f"  archetype: {result.archetype}\n"
+            f"  wt_position: {result.wt_position:.4f}\n"
+            f"  lfo2_rate: {result.lfo2_rate:.4f}\n"
+            f"  lfo2_depth: {result.lfo2_depth:.4f}\n"
+            f"  filter_cutoff: {result.filter_cutoff:.4f}\n"
+            f"  attack: {result.attack:.4f}\n"
+            f"  decay: {result.decay:.4f}\n"
+            f"  sustain: {result.sustain:.4f}\n"
+            f"  release: {result.release:.4f}\n"
+            f"  filter_type: {result.filter_type}\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{preset_name}"\n'
+        )
+
+        out = config_dir / f"{_sanitize(preset_name)}.yaml"
+        out.write_text(content)
+        summary.written.append(out)
+        if result.flags:
+            summary.reviews.append(
+                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=result.flags))
             )
 
     return summary
