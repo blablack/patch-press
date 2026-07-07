@@ -12,9 +12,9 @@ audioread==3.1.0
     # via librosa
 certifi==2026.6.17
     # via requests
-cffi==2.0.0
+cffi==2.1.0
     # via soundfile
-charset-normalizer==3.4.7
+charset-normalizer==3.4.9
     # via requests
 decorator==5.3.1
     # via librosa
@@ -86,7 +86,7 @@ standard-sunau==3.13.0
     #   librosa
 threadpoolctl==3.6.0
     # via scikit-learn
-tqdm==4.68.3
+tqdm==4.68.4
     # via patch-press (pyproject.toml)
 typing-extensions==4.16.0
     # via
