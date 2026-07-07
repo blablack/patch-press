@@ -35,9 +35,10 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9#]+")
 # modifier token elsewhere in the filename to pick the specific bucket.
 _DIRECT: dict[str, str] = {
     "BD": "kick", "KICK": "kick", "KCK": "kick", "BASSDRUM": "kick",
-    "SD": "snare", "SNARE": "snare", "SNR": "snare", "SNAR": "snare",
+    "SD": "snare", "SNARE": "snare", "SNR": "snare", "SNAR": "snare", "SNAREDRUM": "snare",
     "CLAP": "clap",
     "SNAP": "snap",
+    "HANDCLAP": "clap",
     "RIM": "rim", "RIMSHOT": "rim",
     "COWBELL": "cowbell", "COWB": "cowbell",
     "CLAVES": "claves", "CLAVE": "claves", "CLAV": "claves",
@@ -97,3 +98,32 @@ def sort_key(stem: str) -> tuple[int, str]:
     instrument doesn't carry meaning, so alphabetical is as good as any choice).
     """
     return (_PRIORITY[classify_instrument(stem)], stem)
+
+
+_ORDINAL_PREFIX_RE = re.compile(r"^\d+\.\s*")
+_TRAILING_DIGITS_RE = re.compile(r"\s*\d+$")
+
+
+def classify_folder_name(name: str) -> str:
+    """Classify a *folder* name (e.g. '01. Bass Drum', 'CH', '02. Cymbal') into a
+    category, for walking a bag-of-hits library tree (see analysis/drumkit_assemble.py).
+
+    Folder names are often two words ('Bass Drum', 'Hand Clap') where each word
+    tokenizes separately and neither matches _DIRECT on its own — unlike a compact
+    filename token (BD, SD), a folder name is normalized by stripping the leading
+    'NN. ' ordinal and all remaining separators before classification, so 'Bass Drum'
+    concatenates to one 'BASSDRUM' token. classify_instrument itself is untouched;
+    this normalization would incorrectly merge multi-word *filenames* into one token.
+    """
+    core = _ORDINAL_PREFIX_RE.sub("", name)
+    return classify_instrument(re.sub(r"[^A-Za-z0-9#]", "", core))
+
+
+def normalize_tag(name: str) -> str:
+    """Normalize a *flavor* subfolder name ('01. Clean', 'Color 03') to a canonical
+    tag ('CLEAN', 'COLOR') — strips the leading ordinal and a trailing numbered-
+    variant suffix, so 'Color 01'..'Color 05' all collapse to the same tag.
+    """
+    core = _ORDINAL_PREFIX_RE.sub("", name)
+    core = _TRAILING_DIGITS_RE.sub("", core)
+    return re.sub(r"[^A-Za-z0-9#]", "", core).upper()

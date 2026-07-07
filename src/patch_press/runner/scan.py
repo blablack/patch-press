@@ -23,6 +23,7 @@ from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..analysis.drumkit import classify_instrument
+from ..analysis.drumkit_assemble import assemble_kit, discover_flavors, walk_hit_tree
 from ..analysis.pitch import detect_pitch, hz_to_midi
 from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..io.smpl import read_loop_points
@@ -865,6 +866,66 @@ def scan_wavetables(
         if result.flags:
             summary.reviews.append(
                 (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=result.flags))
+            )
+
+    return summary
+
+
+def scan_kit_assemble(
+    hits_root: Path,
+    config_dir: Path,
+    min_categories: int = 2,
+) -> ScanSummary:
+    """Generate one synthetic kit config per shared "flavor" tag found across a
+    bag-of-hits library tree (e.g. Samples From Mars 909_from_mars/Individual Hits).
+
+    Unlike scan-library, there's no existing 1:1 folder-to-preset structure here —
+    the folder tree is a browsing bank (one subfolder per instrument category, each
+    subdivided by a descriptive taxonomy like Clean/Color/Various that repeats across
+    categories). See analysis/drumkit_assemble.py for the tree walk and the
+    tier1(exact flavor)/tier2(Various fallback)/tier3(any file) selection per pad —
+    the resolved file list is written into `source.files` once here, not re-derived
+    at sample/batch time, so the user can hand-edit any single pick afterward.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    library_stem = _sanitize(hits_root.name)
+
+    hits = walk_hit_tree(hits_root)
+    flavors = discover_flavors(hits, min_families=min_categories)
+    summary = ScanSummary(total=len(flavors))
+
+    for flavor in tqdm(flavors, desc=f"Assembling {hits_root.name}", unit="kit"):
+        kit = assemble_kit(hits, flavor)
+        flavor_title = flavor.title()
+        preset_name = f"{hits_root.name} - {flavor_title} Kit"
+        tqdm.write(f"  {preset_name} → {len(kit)} pads")
+
+        fallback_cats = sorted(cat for cat, (_, tier) in kit.items() if tier > 1)
+        flags = [f"no exact '{flavor_title}' match for {', '.join(fallback_cats)} (used Various/any-file fallback)"] if fallback_cats else []
+        review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
+
+        files_block = "".join(f"    - {path}\n" for path, _tier in kit.values())
+        content = (
+            f"{review_line}"
+            f"source:\n"
+            f"  type: library\n"
+            f"  path: {hits_root}\n"
+            f"  drumkit: true\n"
+            f"  files:\n"
+            f"{files_block}"
+            f"\n"
+            f"profile: drums\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{preset_name}"\n'
+        )
+
+        out = config_dir / f"{library_stem}_{_sanitize(flavor_title)}_Kit.yaml"
+        out.write_text(content)
+        summary.written.append(out)
+        if flags:
+            summary.reviews.append(
+                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
             )
 
     return summary

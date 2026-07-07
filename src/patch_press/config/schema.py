@@ -32,6 +32,11 @@ class LibrarySourceConfig:
     # than a multisample (notes parsed from filenames). Set by `scan-library --type
     # drumkit`.
     drumkit: bool = False
+    # Explicit file list for a kit assembled from across a "bag of hits" library tree
+    # (see analysis/drumkit_assemble.py / `assemble-kits`) — the files aren't siblings
+    # in one folder, so they're resolved once at scan time and pinned here rather than
+    # re-derived by globbing `path`. Takes priority over `path` when set.
+    files: Optional[list[Path]] = None
 
 
 @dataclass

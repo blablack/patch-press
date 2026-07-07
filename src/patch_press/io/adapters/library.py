@@ -77,6 +77,8 @@ class LibraryAdapter:
         self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1, progress=None
     ) -> SampleSet:
         path = self._config.path
+        if self._config.files is not None:
+            return self._load_drumkit_flat(name or path.name, path, self._config.files, progress)
         if path.is_file():
             return self._load_single(name or path.stem, path, progress)
         sset_name = name or path.name
@@ -98,6 +100,8 @@ class LibraryAdapter:
         a raw file/subfolder count that overshoots once thinning/capping kick in.
         """
         path = self._config.path
+        if self._config.files is not None:
+            return len(self._config.files)
         if path.is_file():
             return 1
         wavs = sorted(path.glob("*.wav"))

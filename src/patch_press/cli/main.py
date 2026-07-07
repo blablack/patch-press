@@ -28,6 +28,7 @@ from ..runner.scan import (
     note_name_to_midi,
     scan_clap,
     scan_from_probe,
+    scan_kit_assemble,
     scan_library,
     scan_oneshots,
     scan_wavetables,
@@ -189,6 +190,22 @@ def cmd_scan_wavetables(args: argparse.Namespace) -> None:
     )
     if summary.reviews:
         print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
+            print(f"  - {name}: {detail}")
+
+
+def cmd_assemble_kits(args: argparse.Namespace) -> None:
+    summary = scan_kit_assemble(
+        hits_root=args.folder,
+        config_dir=args.config_dir,
+        min_categories=args.min_categories,
+    )
+    print(
+        f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
+    )
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} kit(s) flagged for review:")
         for name, result in summary.reviews:
             detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
             print(f"  - {name}: {detail}")
@@ -509,6 +526,25 @@ def main() -> None:
         help="Override auto-detected archetype; default: auto (spectral analysis per file)",
     )
 
+    # patch-press assemble-kits "909_from_mars/Individual Hits" configs/909Assembled
+    assemble_kits_p = sub.add_parser(
+        "assemble-kits",
+        help="Synthesize kit configs from a bag-of-hits library organized by instrument category",
+    )
+    assemble_kits_p.add_argument(
+        "folder", type=Path, help="Library root (one subfolder per instrument category)"
+    )
+    assemble_kits_p.add_argument(
+        "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    assemble_kits_p.add_argument(
+        "--min-categories",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Minimum distinct instrument families a tag must span to become a kit (default: 2)",
+    )
+
     # patch-press classify configs/*.yaml
     classify_p = sub.add_parser("classify", help="Print sound type for each preset without exporting")
     classify_p.add_argument(
@@ -563,6 +599,8 @@ def main() -> None:
         cmd_scan_oneshots(args)
     elif args.command == "scan-wavetables":
         cmd_scan_wavetables(args)
+    elif args.command == "assemble-kits":
+        cmd_assemble_kits(args)
     elif args.command == "classify":
         cmd_classify(args)
     elif args.command == "profiles":
