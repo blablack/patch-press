@@ -437,11 +437,13 @@ def main() -> None:
     scan_lib_p.add_argument(
         "--type",
         required=True,
-        choices=["multisample", "kit"],
+        choices=["multisample", "kit", "drumkit"],
         help="""
             Library structure: 'multisample' (one folder per
-            instrument, multiple notes) or 'kit' (one folder
-            per instrument, one-shot hits)
+            instrument, multiple notes), 'kit' (one folder per
+            instrument, one-shot hits), or 'drumkit' (one folder
+            per kit, flat one-shot hits identified by filename
+            keyword, e.g. Samples From Mars 808/909 kit folders)
         """,
     )
     scan_lib_p.add_argument(

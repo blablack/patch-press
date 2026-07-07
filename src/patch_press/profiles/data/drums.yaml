@@ -10,5 +10,6 @@ capture:
 
 analysis:
   loop: false
+  pitch_verify: false
   normalize: per_sample
   classify_drums: true

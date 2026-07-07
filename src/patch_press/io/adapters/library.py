@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+from ...analysis.drumkit import sort_key as _drumkit_sort_key
 from ...config.schema import LibrarySourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
@@ -82,6 +83,8 @@ class LibraryAdapter:
         wavs = sorted(path.glob("*.wav"))
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
         if wavs:
+            if self._config.drumkit:
+                return self._load_drumkit_flat(sset_name, path, wavs, progress)
             return self._load_multisample(sset_name, path, wavs, max_round_robins, note_step, progress)
         if subdirs:
             return self._load_kit(sset_name, path, subdirs, max_round_robins, progress)
@@ -99,6 +102,8 @@ class LibraryAdapter:
             return 1
         wavs = sorted(path.glob("*.wav"))
         if wavs:
+            if self._config.drumkit:
+                return len(wavs)
             total = 0
             for files in _grouped_notes(wavs, note_step).values():
                 numbered = [k for k in files if k is not None]
@@ -156,6 +161,31 @@ class LibraryAdapter:
         return SampleSet(
             name=name, category=Category.SYNTH,
             samples=[sample], source_metadata={"path": str(wav)},
+        )
+
+    def _load_drumkit_flat(
+        self, name: str, path: Path, wavs: list[Path], progress=None
+    ) -> SampleSet:
+        """One WAV = one kit pad (e.g. Samples From Mars '808 From Mars': a flat folder
+        of loose one-shot hits, no shared per-note structure, no per-instrument
+        subfolders). Instrument identity comes from the filename alone (see
+        analysis.drumkit.classify_instrument); `note` here is purely a synthetic sort
+        key for kit-row order — the exporter's _export_kit never serializes it, pad
+        position is just document order in <soundSources>.
+        """
+        ordered = sorted(wavs, key=lambda w: _drumkit_sort_key(w.stem))
+        samples: list[Sample] = []
+        for i, wav in enumerate(ordered):
+            samples.append(Sample(
+                note=i, velocity=100, round_robin=1,
+                audio=AudioBuffer.from_file(wav),
+                metadata={"source_file": str(wav), "instrument": wav.stem},
+            ))
+            if progress is not None:
+                progress.update(1)
+        return SampleSet(
+            name=name, category=Category.DRUM,
+            samples=samples, source_metadata={"path": str(path)},
         )
 
     def _load_kit(

@@ -53,6 +53,7 @@ def load_config(path: Path) -> RunConfig:
             path=Path(src["path"]),
             filename_pattern=src.get("filename_pattern"),
             note=src.get("note"),
+            drumkit=src.get("drumkit", False),
         )
     elif src["type"] == "wavetable":
         source = WavetableSourceConfig(path=Path(src["path"]))

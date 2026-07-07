@@ -27,6 +27,11 @@ class LibrarySourceConfig:
     # Filenames in some libraries (e.g. Monosounds oneshots) carry no octave, so the note is
     # detected once by the scan command and pinned here rather than re-parsed from the name.
     note: Optional[int] = None
+    # True when `path` is a flat folder of loose one-shot drum hits (one file = one kit
+    # pad, instrument identified by filename keyword — see analysis/drumkit.py) rather
+    # than a multisample (notes parsed from filenames). Set by `scan-library --type
+    # drumkit`.
+    drumkit: bool = False
 
 
 @dataclass

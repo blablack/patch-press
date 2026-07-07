@@ -83,8 +83,12 @@ def _write_xml(root, path: Path) -> None:
 class DelugeExporter:
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         safe_name = config.name.strip().replace("/", "_").replace("\\", "_")
+        # Kits live in their own SD-card folder, browsed separately from single-sound
+        # SYNTHS presets (confirmed against a real Deluge SD card backup) — a kit XML
+        # written under SYNTHS/ wouldn't show up in the firmware's "load kit" browser.
+        preset_folder = "KITS" if sset.category == Category.DRUM else "SYNTHS"
         wav_dir = path.parent / "SAMPLES" / path.name / safe_name
-        xml_path = path.parent / "SYNTHS" / path.name / f"{safe_name}.xml"
+        xml_path = path.parent / preset_folder / path.name / f"{safe_name}.xml"
         wav_paths = _write_wavs(sset, wav_dir)
 
         if sset.category == Category.DRUM:

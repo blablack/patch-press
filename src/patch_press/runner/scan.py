@@ -22,6 +22,7 @@ from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
+from ..analysis.drumkit import classify_instrument
 from ..analysis.pitch import detect_pitch, hz_to_midi
 from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..io.smpl import read_loop_points
@@ -581,6 +582,18 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str
     if library_type == "kit":
         return "drums", None
 
+    if library_type == "drumkit":
+        hit_wavs = sorted(subfolder.glob("*.wav"))
+        if not hit_wavs:
+            return "drums", "no WAV files found directly in this folder — not a flat drumkit folder"
+        categories = {classify_instrument(wav.stem) for wav in hit_wavs}
+        if categories == {"other"}:
+            return "drums", "no drum/percussion instrument keywords recognized in any filename — verify manually"
+        if len(categories) == 1:
+            only = next(iter(categories))
+            return "drums", f"all {len(hit_wavs)} files classified as '{only}' — verify this is a complete kit, not a single-instrument multisample"
+        return "drums", None
+
     wavs = sorted(subfolder.glob("*.wav"))
     if not wavs:
         return "synth", None
@@ -646,11 +659,13 @@ def scan_library(
             if folder_profile == "drums"
             else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
         )
+        drumkit_line = "  drumkit: true\n" if library_type == "drumkit" else ""
         content = (
             f"{review_line}"
             f"source:\n"
             f"  type: library\n"
             f"  path: {subfolder}\n"
+            f"{drumkit_line}"
             f"\n"
             f"profile: {folder_profile}\n"
             f"{capture_block}\n"
