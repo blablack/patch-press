@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
-from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig
+from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig, WavetableSourceConfig
 from ..io.adapters.library import LibraryAdapter
 from .pipeline import run
 
@@ -27,6 +27,10 @@ def _expected_notes(config: RunConfig) -> int:
             return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)
         except OSError:
             return 0
+    if isinstance(src, WavetableSourceConfig):
+        # scan_wavetables emits one config per file; each contributes exactly one
+        # `progress.update(1)` from runner/pipeline.py's wavetable branch.
+        return 1
     return 0
 
 

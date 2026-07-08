@@ -28,12 +28,28 @@ def _deluge_path(path: Path) -> str:
 def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int], Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[int, int, int], Path] = {}
+    used_names: set[str] = set()
     bpm = int(round(sset.tempo_bpm))
     for s in sset.samples:
         if "source_file" in s.metadata:
-            fname = Path(s.metadata["source_file"]).name
+            src = Path(s.metadata["source_file"])
+            fname = src.name
+            # Two samples whose source WAVs share a basename (e.g. `01.wav` in two
+            # per-instrument subdirs of a kit, or same-named picks across category
+            # folders in assemble-kits) would overwrite each other and both point
+            # at whichever WAV was written last. Prefix with the source parent
+            # dir on collision so both WAVs survive on disk and the paths dict
+            # keeps them distinct.
+            if fname in used_names:
+                fname = f"{src.parent.name}_{src.name}"
+                i = 2
+                while fname in used_names:
+                    fname = f"{src.parent.name}_{i}_{src.name}"
+                    i += 1
+            used_names.add(fname)
         else:
             fname = f"note{s.note:03d}_T{bpm:03d}_V{s.velocity:03d}_RR{s.round_robin}.wav"
+            used_names.add(fname)
         p = output_dir / fname
         if sset.category == Category.WAVETABLE:
             # Copy the raw bytes rather than decode/re-encode: the file is unmodified

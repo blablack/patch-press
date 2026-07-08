@@ -2,16 +2,29 @@ import re
 from pathlib import Path
 
 from ...analysis.drumkit import sort_key as _drumkit_sort_key
+from ...analysis.pitch import NOTE_NAMES
 from ...config.schema import LibrarySourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 from ..smpl import read_loop_points
 
-_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
 # Matches note+octave at end of stem, with optional _NNNN round-robin suffix.
-# Examples: A0, A#-1, C3_0001, F#2_0003
-_NOTE_RR_RE = re.compile(r"([A-G]#?)(-?\d+)(?:_(\d+))?$", re.IGNORECASE)
+# Examples: A0, A#-1, Bb2, C3_0001, F#2_0003
+#
+# The `(?:^|(?<=[^A-Za-z]))` prefix requires the note letter to sit at start-of-stem
+# or immediately after a non-letter (`_`, ` `, `.`, `-`). Without it, `re.search`
+# will greedily right-anchor on any trailing digits, so `Piano_Db3` matches the
+# lowercase `b3` and reports B3 instead of Db3 — off by up to a major third for
+# every flat-named note in libraries that use flat spellings.
+_NOTE_RR_RE = re.compile(
+    r"(?:^|(?<=[^A-Za-z]))([A-G][#b]?)(-?\d+)(?:_(\d+))?$",
+    re.IGNORECASE,
+)
+
+# Enharmonic remap: flat spellings map to their sharp equivalents so the returned
+# MIDI is correct. Bb → A#, Eb → D#, Gb → F#, Ab → G#, Db → C# (subtract one
+# semitone from the natural letter's index).
+_FLAT_ENHARMONIC = {"Bb": "A#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Db": "C#"}
 
 
 def _make_sample(note: int, rr: int, wav: Path) -> Sample:
@@ -34,14 +47,29 @@ def _make_sample(note: int, rr: int, wav: Path) -> Sample:
 
 
 def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
-    """Return (midi_note, rr_index_or_None), or None if no note found."""
+    """Return (midi_note, rr_index_or_None), or None if no note found or MIDI out of range."""
     m = _NOTE_RR_RE.search(stem)
     if not m:
         return None
-    name = m.group(1).upper()
-    if name not in _NOTE_NAMES:
+    raw_name = m.group(1)
+    # Normalize case: letter upper, accidental preserved-lower for `b` (flat glyph),
+    # upper for `#` (sharp). Then remap flats to their enharmonic sharp so the
+    # MIDI lookup stays a single table.
+    if len(raw_name) == 2 and raw_name[1].lower() == "b":
+        name = raw_name[0].upper() + "b"
+        name = _FLAT_ENHARMONIC.get(name, name)
+    else:
+        name = raw_name.upper()
+    if name not in NOTE_NAMES:
         return None
-    midi = _NOTE_NAMES.index(name) + (int(m.group(2)) + 1) * 12
+    midi = NOTE_NAMES.index(name) + (int(m.group(2)) + 1) * 12
+    # Reject values outside the MIDI 0..127 range. Same convention as
+    # runner/scan.py:note_name_to_midi. Filenames whose trailing digits
+    # accidentally look like an octave (e.g. `..._D-99`, `..._C10`) end up
+    # here — silently shipping a negative / >127 note produces invalid
+    # Deluge XML (rangeTopNote and transpose values outside 0..127).
+    if not 0 <= midi <= 127:
+        return None
     rr = int(m.group(3)) if m.group(3) is not None else None
     return midi, rr
 
@@ -195,21 +223,53 @@ class LibraryAdapter:
     def _load_kit(
         self, name: str, path: Path, subdirs: list[Path], max_round_robins: int = 1, progress=None
     ) -> SampleSet:
+        """Subfolder-per-instrument kit (Kick/, Snare/, HH Closed/, Clap/, ...) OR a
+        subfolder-per-note multisample (A3/, C#4/, ...). We tell them apart by whether
+        _parse_note_rr recognises the subfolder names.
+
+        For the kit case, subfolder names don't encode MIDI notes and we can't just
+        default every un-parsed subdir to note=48 — every pad would collapse onto one
+        MIDI slot and the exporter's `by_note[note][:2]` would drop every third
+        instrument. Mirror _load_drumkit_flat: sort by the drumkit canonical order and
+        assign a synthetic `note=i` per subdir. Exporter never serializes it (pad
+        position is document order in <soundSources>).
+        """
+        parsed = [(subdir, _parse_note_rr(subdir.name)) for subdir in subdirs]
+        is_kit = not any(r is not None for _, r in parsed)
+
         samples: list[Sample] = []
-        for subdir in subdirs:
-            wavs = sorted(subdir.glob("*.wav"))
-            result = _parse_note_rr(subdir.name)
-            note = result[0] if result else 48
-            for rr, wav in enumerate(wavs[:max_round_robins], start=1):
-                samples.append(Sample(
-                    note=note, velocity=100, round_robin=rr,
-                    audio=AudioBuffer.from_file(wav),
-                    metadata={"source_file": str(wav), "instrument": subdir.name},
-                ))
-                if progress is not None:
-                    progress.update(1)
-        samples.sort(key=lambda s: (s.note, s.round_robin))
+        if is_kit:
+            ordered = sorted(subdirs, key=lambda d: _drumkit_sort_key(d.name))
+            for i, subdir in enumerate(ordered):
+                wavs = sorted(subdir.glob("*.wav"))
+                for rr, wav in enumerate(wavs[:max_round_robins], start=1):
+                    samples.append(Sample(
+                        note=i, velocity=100, round_robin=rr,
+                        audio=AudioBuffer.from_file(wav),
+                        metadata={"source_file": str(wav), "instrument": subdir.name},
+                    ))
+                    if progress is not None:
+                        progress.update(1)
+            category = Category.DRUM
+        else:
+            for subdir, result in parsed:
+                if result is None:
+                    # A stray non-note subfolder in an otherwise pitched multisample;
+                    # ignore it rather than folding it onto a wrong MIDI slot.
+                    continue
+                note = result[0]
+                wavs = sorted(subdir.glob("*.wav"))
+                for rr, wav in enumerate(wavs[:max_round_robins], start=1):
+                    samples.append(Sample(
+                        note=note, velocity=100, round_robin=rr,
+                        audio=AudioBuffer.from_file(wav),
+                        metadata={"source_file": str(wav), "instrument": subdir.name},
+                    ))
+                    if progress is not None:
+                        progress.update(1)
+            samples.sort(key=lambda s: (s.note, s.round_robin))
+            category = Category.SYNTH
         return SampleSet(
-            name=name, category=Category.DRUM,
+            name=name, category=category,
             samples=samples, source_metadata={"path": str(path)},
         )

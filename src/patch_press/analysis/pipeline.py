@@ -58,7 +58,6 @@ def _init_worker(level: int) -> None:
 from ..config.schema import AnalysisConfig
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
-from ..io.adapters.library import _NOTE_NAMES
 from .classify import classify_drum
 from .envelope import analyze_envelope
 from .loop import (
@@ -69,7 +68,7 @@ from .loop import (
     validate_splice_reason,
 )
 from .normalize import normalize_sample, normalize_set
-from .pitch import verify_pitch
+from .pitch import NOTE_NAMES, verify_pitch
 from .trim import trim_bounds
 
 log = logging.getLogger(__name__)
@@ -79,7 +78,7 @@ _MIN_PERIOD_CONSENSUS = 0.15  # fraction of all samples that must share the same
 
 
 def _note_name(n: int) -> str:
-    return f"{_NOTE_NAMES[n % 12]}{n // 12 - 1}"
+    return f"{NOTE_NAMES[n % 12]}{n // 12 - 1}"
 
 
 def _sound_type_string(analyzed: list[Sample], tempo_bpm: float | None) -> str:

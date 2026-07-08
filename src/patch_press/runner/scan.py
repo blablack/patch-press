@@ -18,9 +18,10 @@ from ..analysis.probe import (
     classify_sustain_type,
     probe,
 )
+from ..analysis.pitch import NOTE_NAMES
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
-from ..io.adapters.library import _NOTE_NAMES, _parse_note_rr
+from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..analysis.drumkit import classify_instrument
 from ..analysis.drumkit_assemble import assemble_kit, discover_flavors, walk_hit_tree
@@ -53,7 +54,7 @@ def note_name_to_midi(name: str) -> int:
     if not m:
         raise ValueError(f"invalid note name {name!r} (expected e.g. C1, F#3, A0)")
     letter, accidental, octave = m.group(1).upper(), m.group(2), int(m.group(3))
-    semi = _NOTE_NAMES.index(letter)
+    semi = NOTE_NAMES.index(letter)
     if accidental == "#":
         semi += 1
     elif accidental == "b":
@@ -174,6 +175,33 @@ def _sanitize(name: str) -> str:
     return s.strip("_")
 
 
+def _write_config_yaml(out: Path, content: str, used_stems: set[str]) -> Path:
+    """Write `content` to `out`, disambiguating on stem collision.
+
+    _sanitize collapses commas/dots/spaces/hyphens all to `_`, so preset names like
+    `BANKS,T.` and `BANKS T` share a sanitised stem and would clobber each other.
+    We track per-run stems and suffix `_2`, `_3`, ... instead of silently overwriting.
+    Also refuses to clobber a pre-existing file on disk from an earlier scan run.
+    """
+    stem = out.stem
+    ext = out.suffix
+    parent = out.parent
+    if stem not in used_stems and not out.exists():
+        used_stems.add(stem)
+        out.write_text(content)
+        return out
+    i = 2
+    while True:
+        alt_stem = f"{stem}_{i}"
+        alt = parent / f"{alt_stem}{ext}"
+        if alt_stem not in used_stems and not alt.exists():
+            used_stems.add(alt_stem)
+            alt.write_text(content)
+            log.warning("%s collided with existing %s; wrote %s instead", out.name, stem, alt.name)
+            return alt
+        i += 1
+
+
 def _config_yaml(
     preset_name: str,
     source_lines: str,
@@ -225,6 +253,7 @@ def _write_config(
     note_step: int,
     note_lo: int,
     note_hi: int,
+    used_stems: set[str],
     raw_state: str | None = None,
     sample_rate: int = 48000,
 ) -> Path:
@@ -237,8 +266,7 @@ def _write_config(
     )
     content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
     out = config_dir / f"{_sanitize(preset_name)}.yaml"
-    out.write_text(content)
-    return out
+    return _write_config_yaml(out, content, used_stems)
 
 
 def _parse_probe_yaml(yaml_path: Path) -> tuple[str, VSTSourceConfig]:
@@ -353,6 +381,7 @@ def scan_from_probe(
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
+    used_stems: set[str] = set()
 
     _switching_verified = len(presets) < 2
     _prev_audio: AudioBuffer | None = None
@@ -401,6 +430,7 @@ def scan_from_probe(
             note_step,
             note_lo,
             note_hi,
+            used_stems,
             raw_state=state_map[preset_name].raw_state,
             sample_rate=sample_rate,
         )
@@ -422,6 +452,7 @@ def _write_clap_config(
     note_step: int,
     note_lo: int,
     note_hi: int,
+    used_stems: set[str],
     sample_rate: int = 48000,
 ) -> Path:
     source_lines = (
@@ -433,8 +464,7 @@ def _write_clap_config(
     )
     content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
     out = config_dir / f"{_sanitize(preset_name)}.yaml"
-    out.write_text(content)
-    return out
+    return _write_config_yaml(out, content, used_stems)
 
 
 def scan_clap(
@@ -508,13 +538,14 @@ def scan_clap(
 
     summary = ScanSummary(total=len(state_map))
     plugin_stem = plugin_path.stem
+    used_stems: set[str] = set()
     # Probe over the full capture duration so slow-decaying plucks are seen to decay to
     # silence (see scan_from_probe for the rationale).
     long_hold_s = sustain_duration_s
     _total_s = long_hold_s + probe_release_s
 
     for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
-        result, preset_profile, _long_audio = _probe_and_classify_preset(
+        result, preset_profile, _ = _probe_and_classify_preset(
             adapter,
             preset_name,
             probe_note,
@@ -538,6 +569,7 @@ def scan_clap(
             note_step,
             note_lo,
             note_hi,
+            used_stems,
             sample_rate=sample_rate,
         )
         summary.written.append(path)
@@ -642,6 +674,7 @@ def scan_library(
     if debug:
         subfolders = subfolders[:30]
     summary = ScanSummary(total=len(subfolders))
+    used_stems: set[str] = set()
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
         if profile is not None:
@@ -675,7 +708,7 @@ def scan_library(
         )
 
         out = config_dir / f"{safe_name}.yaml"
-        out.write_text(content)
+        out = _write_config_yaml(out, content, used_stems)
         summary.written.append(out)
         if review_flag:
             summary.reviews.append(
@@ -700,7 +733,7 @@ def _parse_note_letter(stem: str) -> int | None:
     for token in re.split(r"[\s_-]+", stem):
         m = _ONESHOT_NOTE_TOKEN_RE.match(token)
         if m:
-            semi = _NOTE_NAMES.index(m.group(1).upper())
+            semi = NOTE_NAMES.index(m.group(1).upper())
             if m.group(2) == "#":
                 semi += 1
             elif m.group(2) == "b":
@@ -774,6 +807,7 @@ def scan_oneshots(
     if debug:
         wavs = wavs[:30]
     summary = ScanSummary(total=len(wavs))
+    used_stems: set[str] = set()
 
     for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
         preset_name = wav.stem
@@ -798,7 +832,7 @@ def scan_oneshots(
         )
 
         out = config_dir / f"{_sanitize(preset_name)}.yaml"
-        out.write_text(content)
+        out = _write_config_yaml(out, content, used_stems)
         summary.written.append(out)
         if flags:
             summary.reviews.append(
@@ -826,6 +860,7 @@ def scan_wavetables(
     if debug:
         wavs = wavs[:30]
     summary = ScanSummary(total=len(wavs))
+    used_stems: set[str] = set()
 
     for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
         preset_name = wav.stem
@@ -861,7 +896,7 @@ def scan_wavetables(
         )
 
         out = config_dir / f"{_sanitize(preset_name)}.yaml"
-        out.write_text(content)
+        out = _write_config_yaml(out, content, used_stems)
         summary.written.append(out)
         if result.flags:
             summary.reviews.append(
@@ -893,6 +928,7 @@ def scan_kit_assemble(
     hits = walk_hit_tree(hits_root)
     flavors = discover_flavors(hits, min_families=min_categories)
     summary = ScanSummary(total=len(flavors))
+    used_stems: set[str] = set()
 
     for flavor in tqdm(flavors, desc=f"Assembling {hits_root.name}", unit="kit"):
         kit = assemble_kit(hits, flavor)
@@ -904,7 +940,7 @@ def scan_kit_assemble(
         flags = [f"no exact '{flavor_title}' match for {', '.join(fallback_cats)} (used Various/any-file fallback)"] if fallback_cats else []
         review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
 
-        files_block = "".join(f"    - {path}\n" for path, _tier in kit.values())
+        files_block = "".join(f"    - {path}\n" for path, _ in kit.values())
         content = (
             f"{review_line}"
             f"source:\n"
@@ -921,7 +957,7 @@ def scan_kit_assemble(
         )
 
         out = config_dir / f"{library_stem}_{_sanitize(flavor_title)}_Kit.yaml"
-        out.write_text(content)
+        out = _write_config_yaml(out, content, used_stems)
         summary.written.append(out)
         if flags:
             summary.reviews.append(

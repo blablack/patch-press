@@ -84,7 +84,7 @@ class AnalysisConfig:
     pitch_tolerance_cents: float = 50.0
     loop: bool = False
     loop_use_tempo: bool = False
-    loop_quality_threshold: float = 0.75
+    loop_quality_threshold: float = 0.8
     # Flat 10 ms for now (synths + pads). Covers ~1 fundamental period down to the low
     # register and gives slop for non-phase-aligned (evolving) loops, without smearing
     # movement. May differentiate per sound type later — only synths are being tested now.

@@ -342,6 +342,7 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None, note_off: int |
     if sustain_end - sustain_start < min_region:
         q = n // 4
         attack_end = sustain_start = q
+        attack_s = round(attack_end / sr, 4)
         sustain_end = 3 * q
 
     sustain_start_frame = sustain_start // _HOP

@@ -30,32 +30,33 @@ _PRIORITY = {name: i for i, name in enumerate(_CATEGORY_ORDER)}
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9#]+")
 
-# Direct token → category. Checked first; wins outright except for the three
-# multi-part families (hat/tom/conga) below, which need a High/Low/Open/Closed
-# modifier token elsewhere in the filename to pick the specific bucket.
+# Direct token → category. Iterated in dict insertion order (deterministic) — the
+# first match wins, so more-specific tokens should appear before less-specific
+# ones when there's any overlap risk. Generic cymbal tokens (CYM/CYMBAL) are
+# deliberately NOT in this table; they're handled with two-part precedence below
+# so RIDE and CRASH modifiers resolve them, rather than a set-iteration coin flip.
 _DIRECT: dict[str, str] = {
-    "BD": "kick", "KICK": "kick", "KCK": "kick", "BASSDRUM": "kick",
-    "SD": "snare", "SNARE": "snare", "SNR": "snare", "SNAR": "snare", "SNAREDRUM": "snare",
-    "CLAP": "clap",
+    "BASSDRUM": "kick", "BD": "kick", "KICK": "kick", "KCK": "kick",
+    "SNAREDRUM": "snare", "SD": "snare", "SNARE": "snare", "SNR": "snare", "SNAR": "snare",
+    "HANDCLAP": "clap", "CLAP": "clap",
     "SNAP": "snap",
-    "HANDCLAP": "clap",
-    "RIM": "rim", "RIMSHOT": "rim",
+    "RIMSHOT": "rim", "RIM": "rim",
     "COWBELL": "cowbell", "COWB": "cowbell",
     "CLAVES": "claves", "CLAVE": "claves", "CLAV": "claves",
     "MARACA": "maracas", "MARACAS": "maracas",
     "TAMBOURINE": "tambourine", "TAMB": "tambourine",
     "SHAKER": "shaker", "CABASA": "shaker",
     "TRIANGLE": "triangle", "TRIA": "triangle",
-    "BLOCK": "block", "WOODBLOCK": "block",
+    "WOODBLOCK": "block", "BLOCK": "block",
     "GUIRO": "guiro",
     "BELL": "bell",
     "CRASH": "cymbal_crash", "CRAS": "cymbal_crash",
     "RIDE": "cymbal_ride",
-    "CYM": "cymbal_crash", "CYMBAL": "cymbal_crash",
 }
 _HAT_TOKENS = {"CH", "OH", "HH", "HAT", "HIHAT"}
 _TOM_TOKENS = {"TOM", "TOML", "TOMM", "TOMH"}
 _CONGA_TOKENS = {"CONGA", "CONGAS", "CONL", "CONM", "CONH", "BONGO", "BONGOS"}
+_CYMBAL_TOKENS = {"CYM", "CYMBAL"}
 _LOW_MOD = {"LOW", "LO"}
 _HIGH_MOD = {"HIGH", "HI"}
 _OPEN_MOD = {"OPEN", "OH"}
@@ -67,12 +68,17 @@ def classify_instrument(stem: str) -> str:
     'other' means no known drum/percussion token was found (e.g. an FX one-shot
     bundled into an otherwise-normal kit folder) — it still gets a pad, just
     sorted last, rather than being dropped.
+
+    The direct-token match iterates _DIRECT in insertion order (deterministic).
+    Set-iteration over `tokens` would depend on PYTHONHASHSEED, which is
+    randomized by default — a stem like 'SD_Rim' with two direct-token matches
+    would return different categories across process launches.
     """
     tokens = {t.upper() for t in _TOKEN_RE.findall(stem)}
 
-    for tok in tokens:
-        if tok in _DIRECT:
-            return _DIRECT[tok]
+    for key, cat in _DIRECT.items():
+        if key in tokens:
+            return cat
 
     if tokens & _HAT_TOKENS:
         return "hat_open" if tokens & _OPEN_MOD else "hat_closed"
@@ -88,6 +94,11 @@ def classify_instrument(stem: str) -> str:
         if tokens & _HIGH_MOD:
             return "conga_high"
         return "conga_mid"
+    # Generic CYM/CYMBAL falls through last: only reached when no RIDE/CRASH
+    # modifier was present in _DIRECT, so a bare "Cymbal_01.wav" still
+    # classifies (as crash), but "Ride_Cymbal.wav" already returned above.
+    if tokens & _CYMBAL_TOKENS:
+        return "cymbal_crash"
 
     return "other"
 

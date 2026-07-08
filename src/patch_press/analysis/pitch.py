@@ -2,6 +2,8 @@ import numpy as np
 
 from ..model.audio import AudioBuffer
 
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
 
 def midi_to_hz(note: int) -> float:
     return 440.0 * (2.0 ** ((note - 69) / 12.0))
@@ -43,6 +45,13 @@ def detect_pitch(
         return None
 
     peak_lag = min_lag + int(np.argmax(autocorr[min_lag:max_lag]))
+    # Reject weak peaks. autocorr[0] is the signal energy; requiring the peak's
+    # relative height to clear a threshold avoids returning a "confident" Hz
+    # value for noisy near-silent signals that just cleared the std gate above.
+    # Matches the pattern used in loop.py's period detectors
+    # (_detect_waveform_period gates on `search.max() < 0.3`).
+    if autocorr[peak_lag] / (autocorr[0] + 1e-12) < 0.3:
+        return None
     return float(sr / peak_lag) if peak_lag > 0 else None
 
 
