@@ -58,6 +58,7 @@ def _init_worker(level: int) -> None:
 from ..config.schema import AnalysisConfig
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
+from ..io.adapters.library import _NOTE_NAMES
 from .classify import classify_drum
 from .envelope import analyze_envelope
 from .loop import (
@@ -73,7 +74,6 @@ from .trim import trim_bounds
 
 log = logging.getLogger(__name__)
 
-_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 _MIN_DETECTION_RATE = 0.30   # fraction of samples that must detect any period before consensus check
 _MIN_PERIOD_CONSENSUS = 0.15  # fraction of all samples that must share the same BPM-snapped period
 
@@ -168,7 +168,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
             # post-crossfade seam check is blind — it passes even a loop whose mid-crossfade
             # phase-cancels. The splice quality we care about (start and end on the same
             # waveform phase, so the blend stays in phase) is intrinsic to the loop points.
-            fail = validate_splice_reason(mono, audio.sample_rate, s, e)
+            fail = validate_splice_reason(mono, s, e)
             if not fail:
                 loop_points = (s, e)
                 analysis["loop_quality"] = round(quality, 3)

@@ -48,7 +48,7 @@ class WavetableSourceConfig:
 class WavetableConfig:
     """Archetype-driven Deluge patch parameters for a wavetable, resolved once at scan
     time (see runner/scan.py:scan_wavetables) from the file's own spectral content —
-    see docs/research/wavetable.md. Everything here is a plain 0..1 fraction except
+    see docs/inputs/wavetables.md. Everything here is a plain 0..1 fraction except
     archetype/filter_type; the exporter's _q31() spreads fractions across the Deluge's
     signed-32-bit param range.
     """

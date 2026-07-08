@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from ...config.schema import WavetableSourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet

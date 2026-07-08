@@ -12,6 +12,7 @@ from .envelope import (
     _PLATEAU_FLATNESS,
     _PLATEAU_FLOOR,
 )
+from .pitch import midi_to_hz
 
 log = logging.getLogger(__name__)
 
@@ -316,7 +317,7 @@ def _exact_sub_period(
     sub_mult = _detect_sub_multiple(mono, sr, region_start, region_end, hint_period)
     if sub_mult is None:
         return None
-    f0_period = sr / (440.0 * 2.0 ** ((midi_note - 69) / 12.0))
+    f0_period = sr / midi_to_hz(midi_note)
     return sub_mult * f0_period
 
 
@@ -369,8 +370,7 @@ _SUBHARM_MIN_AC = 0.5   # skip the check when even the best multiple is this wea
 
 
 def _midi_to_period(sr: int, midi_note: int) -> int:
-    freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
-    return max(1, int(round(sr / freq)))
+    return max(1, int(round(sr / midi_to_hz(midi_note))))
 
 
 def _true_repeat_period(autocorr: np.ndarray, t0: int) -> float:
@@ -602,7 +602,7 @@ def _seam_disc(mono: np.ndarray, start: int, end: int) -> tuple[float, float]:
     return amp_disc, deriv_disc
 
 
-def validate_splice_reason(mono: np.ndarray, sr: int, start: int, end: int) -> str:
+def validate_splice_reason(mono: np.ndarray, start: int, end: int) -> str:
     """Return empty string if the splice is clean, else a description of the failing check.
 
     end is treated as exclusive: the loop plays [start, end), so the last sample

@@ -72,7 +72,8 @@ All scan commands accept:
 | Option | Default | Description |
 |---|---|---|
 | `--profile` | auto | Override profile: `pluck` / `synth` / `pad` / `drums` |
-| `--quality` | `medium` | `low` (step 12, fast) / `medium` (step 3) / `high` (step 1, slow) |
+| `--note-step` | 3 | Semitones between captured notes (1 = every note, 12 = one per octave) |
+| `--duration` | 15.0 | Sustain capture duration in seconds |
 | `--sample-rate` | 48000 | 44100 / 48000 / 96000 — VST/CLAP only |
 | `--probe-note` | 60 | MIDI note used to detect sustain type |
 | `--probe-velocity` | 100 | Velocity used when probing |

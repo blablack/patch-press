@@ -137,8 +137,8 @@ def _loop_timbre_seam(analyzed_sample, tempo_bpm: float | None) -> float | None:
     mono = audio.to_mono()
     if ls < 0 or le > len(mono) or le - w < ls + w:
         return None
-    a = librosa.feature.mfcc(y=mono[ls : ls + w].astype(float), sr=sr, n_mfcc=13).mean(axis=1)
-    b = librosa.feature.mfcc(y=mono[le - w : le].astype(float), sr=sr, n_mfcc=13).mean(axis=1)
+    a = librosa.feature.mfcc(y=mono[ls : ls + w], sr=sr, n_mfcc=13).mean(axis=1)
+    b = librosa.feature.mfcc(y=mono[le - w : le], sr=sr, n_mfcc=13).mean(axis=1)
     return float(np.linalg.norm(a - b))
 
 
@@ -818,7 +818,7 @@ def scan_wavetables(
 
     Each file's own spectral content picks its archetype (envelope/filter shape) and
     two continuous parameters (WT scan start position, LFO2-depth) — see
-    analysis/wavetable.py and docs/research/wavetable.md. Files are shipped to the SD
+    analysis/wavetable.py and docs/inputs/wavetables.md. Files are shipped to the SD
     card unmodified; nothing here mutates the audio.
     """
     config_dir.mkdir(parents=True, exist_ok=True)

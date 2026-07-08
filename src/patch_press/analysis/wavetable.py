@@ -1,6 +1,6 @@
 """Spectral analysis → archetype classification for Serum-format wavetables.
 
-See docs/research/wavetable.md: rather than one generic XML template for every
+See docs/inputs/wavetables.md: rather than one generic XML template for every
 wavetable, analyse each file's own spectral content and let it pick the patch's
 archetype (envelope/filter shape) plus a couple of continuous parameters (WT scan
 start position, LFO2→position depth) driven by that file's own timbral variance.
@@ -22,7 +22,7 @@ FRAME_SIZE = 2048
 # Envelope (attack/decay/sustain/release, 0..1 fractions later spread across the
 # Deluge's full Q31 param range by the exporter's _q31()) + filter type + a cutoff
 # bias layered on top of the file's own centroid-driven cutoff. From the "Practical
-# Archetypes" table in docs/research/wavetable.md.
+# Archetypes" table in docs/inputs/wavetables.md.
 _ARCHETYPES: dict[str, dict] = {
     "pad": dict(attack=0.7, decay=0.5, sustain=1.0, release=0.8, filter_type="lpf", cutoff_bias=-0.15),
     "pluck": dict(attack=0.0, decay=0.25, sustain=0.0, release=0.15, filter_type="lpf", cutoff_bias=0.1),
