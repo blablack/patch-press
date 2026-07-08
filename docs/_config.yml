@@ -1,0 +1,46 @@
+title: patch-press
+description: Zero-manual-work Deluge sampler presets from VST plugins and sample libraries.
+
+# just-the-docs via remote_theme — no gem install required.
+# GitHub Pages runs Jekyll natively; only pyyaml/jekyll-remote-theme need to be listed
+# in the plugin allow-list, both of which are enabled by default.
+remote_theme: just-the-docs/just-the-docs
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+# Sidebar navigation: children pages are grouped under their parent via the
+# `parent:` front-matter key set in each page. Order below controls sidebar
+# top-level ordering (Install → Inputs → Pipeline → Outputs → Reference → Research).
+nav_external_links:
+  - title: GitHub repository
+    url: https://github.com/blablack/patch-press
+    hide_icon: false
+
+# Client-side search (Lunr).
+search_enabled: true
+search:
+  heading_level: 3
+  previews: 2
+  preview_words_before: 3
+  preview_words_after: 3
+
+# Enable Mermaid for the pipeline diagrams.
+mermaid:
+  version: "10.7.0"
+
+heading_anchors: true
+color_scheme: dark
+
+# GitHub Pages will infer the correct baseurl for project sites
+# (i.e. /patch-press). Leave both empty here — GH Pages substitutes.
+url: ""
+baseurl: ""
+
+# Exclude files that don't belong on the site.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - .bundle
