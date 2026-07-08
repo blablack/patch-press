@@ -68,7 +68,7 @@ All candidates from all three hunters go into a common pool and are subjected to
 - **Length reward** — longer loops get bonus points, saturating at 1.5 seconds. This is deliberate: a 200 ms loop with a perfect seam is worse than a 1.5 s loop with a very good seam, because short loops make a static sound feel unnaturally "small".
 - **Placement penalty** — loops that sit deep inside the sustain (not straddling the attack or release) are preferred. Reduces the chance of "loop starts, and something audibly changes because we're still in the attack".
 
-The winner's `(loop_start, loop_end)` is written into the Deluge XML. A 10 ms crossfade at the join further smooths any residual seam.
+The winner's `(loop_start, loop_end)` gets embedded in the exported preset (in the Deluge XML, for the Deluge target). A 10 ms crossfade at the join further smooths any residual seam.
 
 ### The fallback
 
@@ -112,7 +112,7 @@ That writes `loop_debug.jsonl` in the current directory. Set `PATCHPRESS_LOOP_DE
 
 ## Fixing a bad loop
 
-The escape hatch for a specific preset is manual editing. Loop points live in the Deluge XML at `SYNTHS/<preset>/<Preset>.XML`, in each `<sampleRange>`:
+The escape hatch for a specific preset is manual editing. For a Deluge target, loop points live in the XML at `SYNTHS/<preset>/<Preset>.XML`, in each `<sampleRange>`:
 
 ```xml
 <sampleRange rangeTopNote="42" fileName="…" transpose="-9" loopMode="1">

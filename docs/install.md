@@ -16,7 +16,7 @@ patch-press runs on **Linux** and **macOS**. Both are POSIX enough that `pathlib
 
 If you're only working with sample libraries or wavetables — no VST/CLAP scanning — patch-render is still pulled in but you'll never invoke it.
 
-**An SD card (or a directory laid out like one).** patch-press writes into a target dir with `SYNTHS/`, `KITS/`, and `SAMPLES/` subfolders. This can be the Deluge SD card mounted directly, or a staging directory you `rsync` to the card later.
+**A target output location.** patch-press writes into whatever directory you point `--path` at, in the layout your `--format` expects. For the Deluge target (the exporter that ships today), that's a directory with `SYNTHS/`, `KITS/`, and `SAMPLES/` subfolders — either the Deluge SD card mounted directly, or a staging directory you `rsync` to the card later. See [Outputs](outputs/) for what each target writes.
 
 ## Install patch-press
 

@@ -9,7 +9,7 @@ nav_order: 5
 
 Wavetables are a different kind of animal from every other input on this site. A wavetable WAV isn't a recording of a note — it's a stack of single-cycle waveforms, each exactly 2048 samples long, that the Deluge's wavetable oscillator sweeps through under LFO or manual control.
 
-Because of that, **wavetables skip the whole analysis pipeline**: no trimming, no envelope detection, no loop hunting, no normalization. The file is copied to the SD card bit-for-bit (preserving Serum's `clm` metadata chunk so the Deluge knows how to slice it), and patch-press generates only the Deluge synth XML around it, with envelope and filter parameters chosen from spectral analysis of the wavetable itself.
+Because of that, **wavetables skip the whole analysis pipeline**: no trimming, no envelope detection, no loop hunting, no normalization. The file is copied to the target bit-for-bit (preserving Serum's `clm` metadata chunk so the target device knows how to slice it), and the exporter generates the surrounding preset with envelope and filter parameters chosen from spectral analysis of the wavetable itself.
 
 ```bash
 patch-press scan-wavetables "~/wavetables/ESW Core Tables" configs/ESWCore

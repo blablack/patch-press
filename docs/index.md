@@ -6,9 +6,11 @@ nav_order: 1
 
 # patch-press
 
-**Zero-manual-work Deluge sampler presets from VST plugins and sample libraries.**
+**Zero-manual-work sampler presets from VST plugins and sample libraries.**
 
-patch-press turns things you already have — a VST folder, a downloaded sample library, a bank of Serum wavetables — into ready-to-play presets for the [Synthstrom Deluge](https://synthstrom.com/product/deluge/). It handles the tedious parts: playing every note, trimming silence, finding a clean loop point, laying WAVs out in the right folder structure, writing the XML the Deluge expects.
+patch-press turns things you already have — a VST folder, a downloaded sample library, a bank of Serum wavetables — into ready-to-play presets for hardware samplers. It handles the tedious parts: playing every note, trimming silence, finding a clean loop point, laying WAVs out in the right folder structure, writing the preset files each target expects.
+
+The current release ships an exporter for the [Synthstrom Deluge](https://synthstrom.com/product/deluge/); the pipeline is format-agnostic and designed to grow additional targets over time.
 
 The pipeline is one command per source. No YAML written by hand in the happy path.
 
@@ -20,8 +22,8 @@ flowchart LR
     W[Serum wavetables] --> S
     S --> C[Configs]
     C --> P[analyze<br/>trim · envelope · pitch · loop · normalize]
-    P --> X[Deluge XML + WAVs]
-    X --> D[SD card]
+    P --> X[exporter<br/>--format]
+    X --> D[SD card / preset files]
 ```
 
 ---
@@ -51,7 +53,7 @@ pip install -e .
 # 2. Point patch-press at your sources → get one YAML config per preset
 patch-press scan-library "~/samples/Mini From Mars" configs/Mini --type multisample
 
-# 3. Run the pipeline → get WAVs + XML written into the Deluge SD-card layout
+# 3. Run the pipeline → export to your target device's format
 patch-press batch "configs/Mini/*.yaml" --path /media/DELUGE --format deluge
 ```
 
@@ -65,6 +67,6 @@ The scan commands write configs so you never have to. Editing a YAML is the esca
 - **[Inputs](inputs/)** — every source type patch-press understands, with its own page.
 - **[Pipeline](pipeline.html)** — what happens to your audio between input and output: trim, envelope, pitch, loop, normalize.
 - **[Loop detection](loops.html)** — how patch-press finds loop points, why sometimes it doesn't, what to do when it picks a bad one.
-- **[Deluge output](outputs/deluge.html)** — SD card layout, XML structure, kit pad ordering.
+- **[Outputs](outputs/)** — target-specific export formats. Currently: Deluge.
 - **[Config reference](config-reference.html)** — the YAML schema you'll edit if you need to.
 - **[CLI reference](cli-reference.html)** — every command and every flag.

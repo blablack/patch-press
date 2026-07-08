@@ -6,7 +6,7 @@ nav_order: 4
 
 # The analysis pipeline
 
-Every rendered or loaded sample goes through the same six-stage pipeline before it's written to the SD card. This page walks through what each stage does and what knobs in your config affect it.
+Every rendered or loaded sample goes through the same six-stage pipeline before the exporter turns the results into target-specific preset files. This page walks through what each stage does and what knobs in your config affect it.
 
 ```mermaid
 flowchart LR
@@ -75,7 +75,7 @@ Some libraries (Samples From Mars is one) bake loop points into the WAV file's R
 
 When patch-press reads a WAV that has a `smpl` chunk with at least one loop, it uses those authored loop points **verbatim** and skips loop detection entirely. Trim is constrained to stay outside the loop bounds. The author's intent is treated as ground truth.
 
-The Deluge itself doesn't read the `smpl` chunk — it reads loop points from the XML that patch-press emits. So patch-press only *consumes* `smpl` on input, never *writes* it on output.
+The Deluge itself doesn't read the `smpl` chunk — the [Deluge exporter](outputs/deluge.html) writes loop points into the XML. So patch-press only *consumes* `smpl` on input; whether an exporter re-writes one on output is up to that specific target.
 
 ## 5. Normalize
 

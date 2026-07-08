@@ -31,7 +31,7 @@ patch-press sample <config.yaml> --path <output-dir> --format <format> [--worker
 |---|---|---|---|
 | `config` | yes | — | Path to the YAML config. |
 | `--path PATH` | yes | — | Output root — usually the SD-card mount point or a staging directory. |
-| `--format FORMAT` | yes | — | Currently `deluge` is the only supported value. |
+| `--format FORMAT` | yes | — | Target export format. Currently ships `deluge`; the pipeline is designed for additional targets. See [Outputs](outputs/). |
 | `--workers N` | no | 1 | Parallel analysis workers. Independent per-sample work parallelizes well. |
 
 ---
@@ -49,7 +49,7 @@ patch-press batch <configs...> --path <output-dir> --format <format> \
 |---|---|---|---|
 | `configs` | yes | — | One or more paths or globs. Globs are expanded by the shell OR by patch-press if they didn't match anything. |
 | `--path PATH` | yes | — | Output root. |
-| `--format FORMAT` | yes | — | `deluge`. |
+| `--format FORMAT` | yes | — | Target export format. Currently `deluge`. |
 | `--workers N` | no | 1 | Parallel workers per config. |
 | `--no-skip` | no | off | Re-run even if the output already exists. |
 | `--only-profile {pluck,synth,pad,drums}` | no | — | Filter to just configs matching this profile. Debug/re-run aid. |

@@ -1,16 +1,15 @@
 ---
 title: Deluge output
 layout: default
-nav_order: 6
-has_children: true
-permalink: /outputs/
+parent: Outputs
+nav_order: 1
 ---
 
 # Deluge output
 
-patch-press writes directly into the Deluge SD-card layout. Point `--path` at the SD-card root (or a staging directory laid out the same way) and it puts every file in the right place.
+patch-press writes directly into the Deluge SD-card layout. Point `--path` at the SD-card root (or a staging directory laid out the same way), pass `--format deluge`, and every file lands in the right place.
 
-Today, Deluge is the only output format.
+Deluge is the target the pipeline was originally built for and — for now — is the only exporter that ships in the box. The pipeline itself is format-agnostic (see [Outputs](./)); other targets can be added without touching the analysis code.
 
 ## SD-card layout
 
