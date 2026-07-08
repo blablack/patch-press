@@ -22,7 +22,7 @@ flowchart LR
 
 ## 1. Capture state with patch-probe
 
-[patch-probe](https://github.com/aleblond/patch-probe) is a small JUCE host that loads a plugin, lets you click through its preset browser, and captures the plugin's raw state blob every time you change presets. You run it once per plugin.
+[patch-probe](https://github.com/blablack/patch-probe) is a small JUCE host that loads a plugin, lets you click through its preset browser, and captures the plugin's raw state blob every time you change presets. You run it once per plugin.
 
 The output is a directory of YAML files — one per preset — each containing:
 

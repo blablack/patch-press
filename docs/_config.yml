@@ -33,10 +33,12 @@ mermaid:
 heading_anchors: true
 color_scheme: dark
 
-# GitHub Pages will infer the correct baseurl for project sites
-# (i.e. /patch-press). Leave both empty here — GH Pages substitutes.
-url: ""
-baseurl: ""
+# GitHub Pages serves this site at https://blablack.github.io/patch-press/, so all
+# absolute asset URLs (theme CSS/JS/SVG) must be prefixed with /patch-press.
+# baseurl is the path prefix; url is the origin. Jekyll uses both when rendering
+# `{{ site.baseurl }}` and `{{ site.url }}` in the theme's HTML.
+url: "https://blablack.github.io"
+baseurl: "/patch-press"
 
 # Exclude files that don't belong on the site.
 exclude:

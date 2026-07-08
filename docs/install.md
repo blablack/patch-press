@@ -12,7 +12,7 @@ patch-press runs on **Linux** and **macOS**. Both are POSIX enough that `pathlib
 
 **Python ≥ 3.14.** Older versions won't install — check with `python3 --version`.
 
-**[patch-render](https://github.com/aleblond/patch-render)** — a small JUCE-based headless audio host that patch-press uses to render VST and CLAP plugins. Pulled in automatically as a dependency, but requires a working C++/JUCE build toolchain on the machine (Xcode Command Line Tools on macOS; `build-essential` and the JUCE build prerequisites on Linux).
+**[patch-render](https://github.com/blablack/patch-render)** — a small JUCE-based headless audio host that patch-press uses to render VST and CLAP plugins. Pulled in automatically as a dependency, but requires a working C++/JUCE build toolchain on the machine (Xcode Command Line Tools on macOS; `build-essential` and the JUCE build prerequisites on Linux).
 
 If you're only working with sample libraries or wavetables — no VST/CLAP scanning — patch-render is still pulled in but you'll never invoke it.
 
@@ -21,7 +21,7 @@ If you're only working with sample libraries or wavetables — no VST/CLAP scann
 ## Install patch-press
 
 ```bash
-git clone https://github.com/aleblond/patch-press
+git clone https://github.com/blablack/patch-press
 cd patch-press
 pip install -e .
 ```
