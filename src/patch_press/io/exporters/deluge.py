@@ -348,8 +348,8 @@ class DelugeExporter:
         sources = etree.SubElement(kit, "soundSources")
 
         for note in sorted(by_note):
-            note_samples = by_note[note][:2]  # Deluge supports 2 oscillators per pad
-            inst_name = note_samples[0].metadata.get("instrument", f"note{note:03d}")
+            s = by_note[note][0]  # Deluge kit pads have no round-robin/velocity-layer engine; pick one sample
+            inst_name = s.metadata.get("instrument", f"note{note:03d}")
 
             sound = etree.SubElement(
                 sources,
@@ -362,19 +362,27 @@ class DelugeExporter:
                 lpfMode="24dB",
                 modFXType="none",
             )
-            for i, s in enumerate(note_samples):
-                wav = wav_paths[(s.note, s.velocity, s.round_robin)]
-                osc = etree.SubElement(
-                    sound,
-                    f"osc{i + 1}",
-                    type="sample",
-                    loopMode="1" if s.loop_points else "0",
-                    reversed="0",
-                    timeStretchEnable="0",
-                    timeStretchAmount="0",
-                    fileName=_deluge_path(wav),
-                )
-                _zone_el(osc, wav, s)
+            wav = wav_paths[(s.note, s.velocity, s.round_robin)]
+            osc1 = etree.SubElement(
+                sound,
+                "osc1",
+                type="sample",
+                loopMode="1" if s.loop_points else "0",
+                reversed="0",
+                timeStretchEnable="0",
+                timeStretchAmount="0",
+                fileName=_deluge_path(wav),
+            )
+            _zone_el(osc1, wav, s)
+            etree.SubElement(
+                sound,
+                "osc2",
+                type="sample",
+                loopMode="0",
+                reversed="0",
+                timeStretchEnable="0",
+                timeStretchAmount="0",
+            )
 
             etree.SubElement(sound, "lfo1", type="triangle", syncLevel="0")
             etree.SubElement(sound, "lfo2", type="triangle")
@@ -388,9 +396,9 @@ class DelugeExporter:
                 arpeggiatorGate="0x00000000",
                 portamento="0x80000000",
                 compressorShape="0xDC28F5B2",
-                oscAVolume="0x00000000",
+                oscAVolume="0x7FFFFFFF",
                 oscAPulseWidth="0x00000000",
-                oscBVolume="0x00000000",
+                oscBVolume="0x80000000",
                 oscBPulseWidth="0x00000000",
                 noiseVolume="0x80000000",
                 volume="0x4CCCCCA8",
@@ -427,8 +435,6 @@ class DelugeExporter:
             etree.SubElement(cables, "patchCable", source="velocity", destination="volume", amount="0x3FFFFFE8")
             etree.SubElement(cables, "patchCable", source="aftertouch", destination="volume", amount="0x2A3D7094")
             etree.SubElement(cables, "patchCable", source="y", destination="lpfFrequency", amount="0x19999990")
-            etree.SubElement(cables, "patchCable", source="velocity", destination="oscAVolume", amount="0x3FFFFFE8")
-            etree.SubElement(cables, "patchCable", source="velocity", destination="oscBVolume", amount="0xC0000018")
 
         etree.SubElement(kit, "selectedDrumIndex").text = "1"
         _write_xml(kit, xml_path)
