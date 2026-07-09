@@ -94,7 +94,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
 def cmd_scan_from_probe(args: argparse.Namespace) -> None:
     summary = scan_from_probe(
-        probe_dir=args.probe_dir,
+        probe_dir=args.probe_dir.resolve(),
         config_dir=args.config_dir,
         profile=args.profile,
         probe_note=args.probe_note,
@@ -123,8 +123,8 @@ def cmd_scan_from_probe(args: argparse.Namespace) -> None:
 
 def cmd_scan_clap(args: argparse.Namespace) -> None:
     summary = scan_clap(
-        plugin_path=args.plugin,
-        preset_dir=args.preset_dir,
+        plugin_path=args.plugin.resolve(),
+        preset_dir=args.preset_dir.resolve(),
         config_dir=args.config_dir,
         profile=args.profile,
         probe_note=args.probe_note,
@@ -147,7 +147,7 @@ def cmd_scan_clap(args: argparse.Namespace) -> None:
 
 def cmd_scan_library(args: argparse.Namespace) -> None:
     summary = scan_library(
-        library_path=args.library,
+        library_path=args.library.resolve(),
         config_dir=args.config_dir,
         library_type=args.type,
         profile=args.profile,
@@ -163,7 +163,7 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
 
 def cmd_scan_oneshots(args: argparse.Namespace) -> None:
     summary = scan_oneshots(
-        folder=args.folder,
+        folder=args.folder.resolve(),
         config_dir=args.config_dir,
         profile=args.profile,
         debug=args.debug,
@@ -180,7 +180,7 @@ def cmd_scan_oneshots(args: argparse.Namespace) -> None:
 
 def cmd_scan_wavetables(args: argparse.Namespace) -> None:
     summary = scan_wavetables(
-        folder=args.folder,
+        folder=args.folder.resolve(),
         config_dir=args.config_dir,
         archetype=args.archetype,
         debug=args.debug,
@@ -197,7 +197,7 @@ def cmd_scan_wavetables(args: argparse.Namespace) -> None:
 
 def cmd_assemble_kits(args: argparse.Namespace) -> None:
     summary = scan_kit_assemble(
-        hits_root=args.folder,
+        hits_root=args.folder.resolve(),
         config_dir=args.config_dir,
         min_categories=args.min_categories,
     )

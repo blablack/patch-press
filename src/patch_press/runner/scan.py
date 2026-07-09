@@ -11,26 +11,24 @@ from ..progress import ProgressBar as tqdm
 
 log = logging.getLogger(__name__)
 
+from ..analysis.drumkit import classify_instrument
+from ..analysis.drumkit_assemble import assemble_kit, discover_flavors, walk_hit_tree
 from ..analysis.pipeline import classify_sampleset
+from ..analysis.pitch import NOTE_NAMES, detect_pitch, hz_to_midi
 from ..analysis.probe import (
     SHORT_HOLD_S,
     ProbeResult,
     classify_sustain_type,
     probe,
 )
-from ..analysis.pitch import NOTE_NAMES
+from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
-from ..analysis.drumkit import classify_instrument
-from ..analysis.drumkit_assemble import assemble_kit, discover_flavors, walk_hit_tree
-from ..analysis.pitch import detect_pitch, hz_to_midi
-from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..io.smpl import read_loop_points
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
-
 
 # Defaults for the two independent capture axes, exposed as raw CLI params:
 #   note_step  — semitones between sampled notes (1 = every semitone = most notes)
@@ -70,9 +68,7 @@ def _min_release_s(duration_s: float) -> float:
     return max(2.0, duration_s * 0.25)
 
 
-def _validate_capture_params(
-    note_step: int, duration_s: float | None, note_lo: int, note_hi: int
-) -> None:
+def _validate_capture_params(note_step: int, duration_s: float | None, note_lo: int, note_hi: int) -> None:
     """Backstop guards for capture params (the CLI validates too, but protect API callers)."""
     if note_step < 1:
         raise ValueError(f"note_step must be >= 1, got {note_step}")
@@ -126,8 +122,8 @@ def _loop_timbre_seam(analyzed_sample, tempo_bpm: float | None) -> float | None:
     loop_end — the two spans that abut at the wrap. Low = the timbre repeats (seamless); high = it
     jumped (an evolving, non-repeatable sound).
     """
-    import numpy as np
     import librosa
+    import numpy as np
 
     if analyzed_sample.loop_points is None:
         return None
@@ -258,12 +254,7 @@ def _write_config(
     sample_rate: int = 48000,
 ) -> Path:
     raw_state_line = f'  raw_state: "{raw_state}"\n' if raw_state else ""
-    source_lines = (
-        f"  type: vst\n"
-        f"  plugin: {plugin_path}\n"
-        f'  preset: "{preset_name}"\n'
-        f"{raw_state_line}"
-    )
+    source_lines = f'  type: vst\n  plugin: {plugin_path}\n  preset: "{preset_name}"\n{raw_state_line}'
     content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
     out = config_dir / f"{_sanitize(preset_name)}.yaml"
     return _write_config_yaml(out, content, used_stems)
@@ -377,7 +368,7 @@ def scan_from_probe(
     adapter = VSTAdapter(VSTSourceConfig(plugin=plugin_path), state_map=state_map)
     presets = list(state_map.keys())
     if debug:
-        presets = presets[:30]
+        presets = presets[:5]
 
     plugin_stem = plugin_path.stem
     summary = ScanSummary(total=len(presets))
@@ -518,7 +509,7 @@ def scan_clap(
         import random
 
         rng = random.Random(42)
-        preset_files = rng.sample(preset_files, min(30, len(preset_files)))
+        preset_files = rng.sample(preset_files, min(5, len(preset_files)))
 
     state_map: dict[str, CLAPSourceConfig] = {}
     for pf in preset_files:
@@ -624,7 +615,10 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str
             return "drums", "no drum/percussion instrument keywords recognized in any filename — verify manually"
         if len(categories) == 1:
             only = next(iter(categories))
-            return "drums", f"all {len(hit_wavs)} files classified as '{only}' — verify this is a complete kit, not a single-instrument multisample"
+            return (
+                "drums",
+                f"all {len(hit_wavs)} files classified as '{only}' — verify this is a complete kit, not a single-instrument multisample",
+            )
         return "drums", None
 
     wavs = sorted(subfolder.glob("*.wav"))
@@ -672,7 +666,7 @@ def scan_library(
 
     subfolders = sorted(p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith("."))
     if debug:
-        subfolders = subfolders[:30]
+        subfolders = subfolders[:5]
     summary = ScanSummary(total=len(subfolders))
     used_stems: set[str] = set()
 
@@ -689,9 +683,7 @@ def scan_library(
 
         review_line = f"# REVIEW: {review_flag}\n" if review_flag else ""
         capture_block = (
-            ""
-            if folder_profile == "drums"
-            else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
+            "" if folder_profile == "drums" else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
         )
         drumkit_line = "  drumkit: true\n" if library_type == "drumkit" else ""
         content = (
@@ -712,7 +704,10 @@ def scan_library(
         summary.written.append(out)
         if review_flag:
             summary.reviews.append(
-                (subfolder.name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=[review_flag]))
+                (
+                    subfolder.name,
+                    ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=[review_flag]),
+                )
             )
 
     return summary
@@ -805,7 +800,7 @@ def scan_oneshots(
     config_dir.mkdir(parents=True, exist_ok=True)
     wavs = sorted(folder.glob("*.wav"))
     if debug:
-        wavs = wavs[:30]
+        wavs = wavs[:5]
     summary = ScanSummary(total=len(wavs))
     used_stems: set[str] = set()
 
@@ -858,7 +853,7 @@ def scan_wavetables(
     config_dir.mkdir(parents=True, exist_ok=True)
     wavs = sorted(folder.glob("*.wav"))
     if debug:
-        wavs = wavs[:30]
+        wavs = wavs[:5]
     summary = ScanSummary(total=len(wavs))
     used_stems: set[str] = set()
 
@@ -900,7 +895,10 @@ def scan_wavetables(
         summary.written.append(out)
         if result.flags:
             summary.reviews.append(
-                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=result.flags))
+                (
+                    preset_name,
+                    ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=result.flags),
+                )
             )
 
     return summary
@@ -937,7 +935,11 @@ def scan_kit_assemble(
         tqdm.write(f"  {preset_name} → {len(kit)} pads")
 
         fallback_cats = sorted(cat for cat, (_, tier) in kit.items() if tier > 1)
-        flags = [f"no exact '{flavor_title}' match for {', '.join(fallback_cats)} (used Various/any-file fallback)"] if fallback_cats else []
+        flags = (
+            [f"no exact '{flavor_title}' match for {', '.join(fallback_cats)} (used Various/any-file fallback)"]
+            if fallback_cats
+            else []
+        )
         review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
 
         files_block = "".join(f"    - {path}\n" for path, _ in kit.values())
