@@ -173,7 +173,15 @@ def classify_archetype(audio: AudioBuffer) -> WavetableAnalysis:
     else:
         lfo2_rate, lfo2_depth = 0.55, 0.75
 
+    # `bright` is scaled for the archetype thresholds above (0.03-0.15 is typical for
+    # this corpus) — far too small to double as the filter's openness fraction, where
+    # 0.0 = fully closed and 1.0 = wide open (_q31 / the reference XML's lpfFrequency=
+    # 0x7FFFFFFF). Using it directly clamped almost every file to the 0.05 floor, i.e.
+    # a nearly fully-closed LPF, which silenced the wavetable oscillator in practice.
+    # Anchor on a mid-open base instead (0.7 + pad's -0.15 bias reproduces the doc's
+    # own filter_cutoff: 0.55 example) and let brightness nudge it a little either way.
     cutoff_bias = _ARCHETYPES[archetype]["cutoff_bias"]
-    filter_cutoff = max(0.05, min(0.95, bright + cutoff_bias))
+    brightness_nudge = (bright - 0.08) * 0.5
+    filter_cutoff = max(0.05, min(0.95, 0.7 + cutoff_bias + brightness_nudge))
 
     return _template_result(archetype, wt_position, lfo2_rate, lfo2_depth, filter_cutoff, flags=[])
