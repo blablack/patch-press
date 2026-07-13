@@ -97,6 +97,10 @@ class AnalysisConfig:
 @dataclass
 class OutputConfig:
     name: str
+    # Optional SD-card subfolder tree under SYNTHS|KITS/<collection>/, mirroring the
+    # source's own organisation (e.g. a u-he bank/author path "1 BASS" or
+    # "THIRD PARTY/Mr Wobble"). Empty = filed directly under the collection.
+    subfolder: str = ""
 
 
 @dataclass

@@ -135,7 +135,11 @@ def _detect_settled_plateau(
     floor = _PLATEAU_FLOOR * peak_rms
     sw = np.lib.stride_tricks.sliding_window_view(post, W)
     m = sw.mean(axis=1)
-    cv = np.where(m > 1e-9, sw.std(axis=1) / m, np.inf)
+    # Divide only where the mean is non-zero; silent windows (m==0, e.g. Diva release tails)
+    # would give 0/0=nan and a spurious RuntimeWarning. np.where can't do this — it evaluates
+    # both branches for every element — so use np.divide's `where`/`out` to leave those inf.
+    cv = np.full(m.shape, np.inf)
+    np.divide(sw.std(axis=1), m, out=cv, where=m > 1e-9)
     flat = (m > floor) & (cv <= _PLATEAU_SCAN_CV)  # flag per window START index
 
     # Longest contiguous run of flat window-starts; the plateau spans the samples they cover.

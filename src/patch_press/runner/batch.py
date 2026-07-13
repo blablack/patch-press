@@ -5,6 +5,7 @@ from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
 from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig, WavetableSourceConfig
 from ..io.adapters.library import LibraryAdapter
+from ..io.exporters import get_exporter
 from .pipeline import run
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def run_batch(
 
     # Pre-pass: load every config and decide skips up front so the shared bar's total is the
     # number of notes actually about to be captured (skipped presets contribute none).
+    exporter_cls = get_exporter(output_format)
     plan: list[tuple[Path, RunConfig | None, object]] = []  # (path, config, state)
     total_notes = 0
     for cfg_path in config_paths:
@@ -53,9 +55,7 @@ def run_batch(
         except Exception as exc:
             plan.append((cfg_path, None, exc))
             continue
-        safe_name = config.output.name.strip().replace("/", "_").replace("\\", "_")
-        expected = output_path.parent / "SYNTHS" / output_path.name / f"{safe_name}.xml"
-        if skip_existing and expected.exists():
+        if skip_existing and any(p.exists() for p in exporter_cls.expected_outputs(config.output, output_path)):
             plan.append((cfg_path, config, "skip"))
             continue
         plan.append((cfg_path, config, None))

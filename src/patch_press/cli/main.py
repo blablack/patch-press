@@ -136,6 +136,7 @@ def cmd_scan_clap(args: argparse.Namespace) -> None:
         debug=args.debug,
         sample_rate=args.sample_rate,
         tempo_bpm=args.tempo_bpm,
+        collection_root=args.collection_root.resolve() if args.collection_root else None,
     )
     print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
     if summary.reviews:
@@ -271,7 +272,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format (e.g. deluge)",
+        help="Output format: deluge | pti",
     )
     sample_p.add_argument(
         "--workers",
@@ -297,7 +298,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format (e.g. deluge)",
+        help="Output format: deluge | pti",
     )
     batch_p.add_argument(
         "--workers",
@@ -388,10 +389,19 @@ def main() -> None:
     )
     scan_clap_p.add_argument("plugin", type=Path, help="Path to the .clap plugin file")
     scan_clap_p.add_argument(
-        "preset_dir", type=Path, help="Directory containing .clap-preset files"
+        "preset_dir", type=Path, help="Directory of .clap-preset, .fxp, or u-he .h2p preset files (.h2p searched recursively)"
     )
     scan_clap_p.add_argument(
         "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    scan_clap_p.add_argument(
+        "--collection-root",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Mirror each preset's folder position relative to DIR into the config's "
+        "output.subfolder and config path (so the on-card SYNTHS layout matches the "
+        "plugin's own preset folders). Default: flat (no subfolders).",
     )
     scan_clap_p.add_argument(
         "--profile",
@@ -609,6 +619,11 @@ def main() -> None:
     # C extensions (JUCE via patch-render, numba/LLVM via librosa) crash during
     # Python interpreter teardown. For a CLI tool, skipping teardown is safe
     # because temp files are cleaned up inside finally blocks in VSTAdapter._render().
+    # os._exit skips the usual atexit stream flush, so do it by hand — otherwise a
+    # short run with piped (block-buffered) stdout exits with its output still in
+    # the buffer.
+    sys.stdout.flush()
+    sys.stderr.flush()
     os._exit(0)
 
 

@@ -21,6 +21,16 @@ _NOTE_RR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fallback for libraries that put the note at the START of the stem with descriptive
+# text after it (e.g. "A1 Precision Bass Amped Long_01"). Only consulted when the
+# end-anchored match above fails, so end-named libraries are never affected. The note
+# must be followed by a non-alphanumeric boundary so "Ambient..." / "Cello..." don't
+# match as notes.
+_NOTE_START_RE = re.compile(
+    r"^([A-G][#b]?)(-?\d+)(?:_(\d+))?(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
 # Enharmonic remap: flat spellings map to their sharp equivalents so the returned
 # MIDI is correct. Bb → A#, Eb → D#, Gb → F#, Ab → G#, Db → C# (subtract one
 # semitone from the natural letter's index).
@@ -48,7 +58,7 @@ def _make_sample(note: int, rr: int, wav: Path) -> Sample:
 
 def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
     """Return (midi_note, rr_index_or_None), or None if no note found or MIDI out of range."""
-    m = _NOTE_RR_RE.search(stem)
+    m = _NOTE_RR_RE.search(stem) or _NOTE_START_RE.match(stem)
     if not m:
         return None
     raw_name = m.group(1)

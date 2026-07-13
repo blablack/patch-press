@@ -12,6 +12,7 @@ dependencies = [
     "lxml",
     "pyyaml",
     "librosa",
+    "soxr",  # 44.1 kHz resampling in the Polyend .pti exporter (also a librosa dep)
     'tqdm',
 ]
 

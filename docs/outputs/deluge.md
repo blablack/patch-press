@@ -9,7 +9,7 @@ nav_order: 1
 
 patch-press writes directly into the Deluge SD-card layout. Point `--path` at the SD-card root (or a staging directory laid out the same way), pass `--format deluge`, and every file lands in the right place.
 
-Deluge is the target the pipeline was originally built for and — for now — is the only exporter that ships in the box. The pipeline itself is format-agnostic (see [Outputs](./)); other targets can be added without touching the analysis code.
+Deluge is the target the pipeline was originally built for. The pipeline itself is format-agnostic (see [Outputs](./)) — a [Polyend Tracker exporter](polyend.html) ships alongside it — and other targets can be added without touching the analysis code.
 
 ## SD-card layout
 

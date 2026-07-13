@@ -17,7 +17,6 @@ The `--format` flag on `sample` and `batch` picks a target-specific exporter tha
 | `--format` | Target | Docs |
 |---|---|---|
 | `deluge` | [Synthstrom Deluge](https://synthstrom.com/product/deluge/) — XML preset + WAVs in the SD-card layout | [Deluge output](deluge.html) |
+| `pti` | [Polyend Tracker](https://polyend.com/tracker/) family — self-contained `.pti` instruments | [Polyend Tracker output](polyend.html) |
 
-Deluge is what shipped first because it's the device patch-press was built for. The pipeline architecture is set up to add more targets over time — anything with a defined preset format is a candidate — but the current release only implements the Deluge exporter.
-
-If your target is Deluge, keep reading in [Deluge output](deluge.html) for the full SD-card layout, XML structure, and pad ordering details.
+Deluge is what shipped first because it's the device patch-press was built for. The pipeline architecture is set up to add more targets over time — anything with a defined preset format is a candidate.

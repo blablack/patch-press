@@ -8,6 +8,7 @@ from lxml import etree
 
 from ...config.schema import OutputConfig
 from ...model.sample import Category, Sample, SampleSet
+from ._common import safe_component, subfolder_parts
 
 _FIRMWARE = "4.1.3"
 _MIN_FIRMWARE = "4.1.0-alpha"
@@ -97,14 +98,32 @@ def _write_xml(root, path: Path) -> None:
 
 
 class DelugeExporter:
+    @classmethod
+    def expected_outputs(cls, output: OutputConfig, path: Path) -> list[Path]:
+        """Paths whose existence means this preset is already exported.
+
+        A config alone doesn't say kit-vs-synth (that's decided by the sample set's
+        category at export time), so both candidate XML locations are listed —
+        callers treat "any exists" as done.
+        """
+        safe = safe_component(output.name)
+        sub = subfolder_parts(output.subfolder)
+        return [
+            path.parent.joinpath(folder, path.name, *sub, f"{safe}.xml")
+            for folder in ("SYNTHS", "KITS")
+        ]
+
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
-        safe_name = config.name.strip().replace("/", "_").replace("\\", "_")
+        safe_name = safe_component(config.name)
+        # An optional subfolder tree (config.subfolder) is inserted after the collection
+        # so presets can mirror their source's own folder organisation on the card.
+        sub = subfolder_parts(config.subfolder)
         # Kits live in their own SD-card folder, browsed separately from single-sound
         # SYNTHS presets (confirmed against a real Deluge SD card backup) — a kit XML
         # written under SYNTHS/ wouldn't show up in the firmware's "load kit" browser.
         preset_folder = "KITS" if sset.category == Category.DRUM else "SYNTHS"
-        wav_dir = path.parent / "SAMPLES" / path.name / safe_name
-        xml_path = path.parent / preset_folder / path.name / f"{safe_name}.xml"
+        wav_dir = path.parent.joinpath("SAMPLES", path.name, *sub, safe_name)
+        xml_path = path.parent.joinpath(preset_folder, path.name, *sub, f"{safe_name}.xml")
         wav_paths = _write_wavs(sset, wav_dir)
 
         if sset.category == Category.DRUM:

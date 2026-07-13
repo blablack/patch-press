@@ -34,7 +34,7 @@ lxml==6.1.1
     # via patch-press (pyproject.toml)
 msgpack==1.2.1
     # via librosa
-narwhals==2.23.0
+narwhals==2.24.0
     # via scikit-learn
 numba==0.66.0
     # via librosa
@@ -73,7 +73,9 @@ soundfile==0.14.0
     #   librosa
     #   patch-press (pyproject.toml)
 soxr==1.1.0
-    # via librosa
+    # via
+    #   librosa
+    #   patch-press (pyproject.toml)
 standard-aifc==3.13.0
     # via
     #   audioread

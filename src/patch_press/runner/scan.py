@@ -207,9 +207,11 @@ def _config_yaml(
     note_lo: int,
     note_hi: int,
     sample_rate: int,
+    subfolder: str = "",
 ) -> str:
     """Render the shared body of a scan-generated config YAML around a source-specific block."""
     review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
+    subfolder_line = f'  subfolder: "{subfolder}"\n' if subfolder else ""
 
     meta = f"confidence={result.confidence}"
     meta += f" sustains={'yes' if result.sustains else 'no'}"
@@ -236,6 +238,7 @@ def _config_yaml(
         f"\n"
         f"output:\n"
         f'  name: "{preset_name}"\n'
+        f"{subfolder_line}"
     )
 
 
@@ -445,6 +448,7 @@ def _write_clap_config(
     note_hi: int,
     used_stems: set[str],
     sample_rate: int = 48000,
+    subfolder: str = "",
 ) -> Path:
     source_lines = (
         f"  type: clap\n"
@@ -453,8 +457,17 @@ def _write_clap_config(
         f'  preset: "{preset_name}"\n'
         f"  preset_path: {preset_path}\n"
     )
-    content = _config_yaml(preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate)
-    out = config_dir / f"{_sanitize(preset_name)}.yaml"
+    content = _config_yaml(
+        preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate, subfolder=subfolder
+    )
+    # Mirror the preset's source subfolder in the config tree too, so configs are
+    # organised the same way as the presets (and the exported XMLs).
+    target_dir = config_dir
+    for comp in subfolder.split("/"):
+        if comp:
+            target_dir = target_dir / comp
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out = target_dir / f"{_sanitize(preset_name)}.yaml"
     return _write_config_yaml(out, content, used_stems)
 
 
@@ -473,6 +486,7 @@ def scan_clap(
     debug: bool = False,
     sample_rate: int = 48000,
     tempo_bpm: float = 120.0,
+    collection_root: Path | None = None,
 ) -> ScanSummary:
     """Scan CLAP presets from a directory of .clap-preset files.
 
@@ -498,12 +512,18 @@ def scan_clap(
     plugin_id = plugins[0]["id"]
     tqdm.write(f"Plugin: {plugins[0]['name']} ({plugin_id})")
 
-    # Collect preset files (.clap-preset preferred, fall back to .fxp)
+    # Collect preset files (.clap-preset preferred, fall back to .fxp, then u-he .h2p).
+    # u-he ships presets as `.h2p` — their native format doubles as the plugin's CLAP
+    # state blob, so CLAPAdapter._raw_state_for base64s the raw bytes straight into
+    # state->load() (the FXP-header strip is a no-op on them). They nest into bank
+    # subfolders, so search recursively.
     preset_files = sorted(preset_dir.glob("*.clap-preset"))
     if not preset_files:
         preset_files = sorted(preset_dir.glob("*.fxp"))
     if not preset_files:
-        raise RuntimeError(f"No .clap-preset or .fxp files found in: {preset_dir}")
+        preset_files = sorted(preset_dir.rglob("*.h2p"))
+    if not preset_files:
+        raise RuntimeError(f"No .clap-preset, .fxp or .h2p files found in: {preset_dir}")
 
     if debug:
         import random
@@ -549,11 +569,23 @@ def scan_clap(
             tempo_bpm,
         )
 
+        # Mirror the preset's folder position (relative to collection_root, e.g. the
+        # plugin's Presets root) into the config + exported XML so the on-card layout
+        # matches how the presets are organised in the plugin.
+        subfolder = ""
+        preset_path = state_map[preset_name].preset_path
+        if collection_root is not None and preset_path is not None:
+            try:
+                rel = preset_path.parent.relative_to(collection_root).as_posix()
+                subfolder = "" if rel == "." else rel
+            except ValueError:
+                subfolder = ""
+
         path = _write_clap_config(
             preset_name,
             plugin_path,
             plugin_id,
-            state_map[preset_name].preset_path,
+            preset_path,
             result,
             config_dir,
             preset_profile,
@@ -562,6 +594,7 @@ def scan_clap(
             note_hi,
             used_stems,
             sample_rate=sample_rate,
+            subfolder=subfolder,
         )
         summary.written.append(path)
         if result.confidence != "high" or result.flags:
