@@ -13,9 +13,11 @@ checked against Polyend's official tracker-lib (github.com/polyend/tracker-lib):
   (value/65535*frames), not frame indices.
 - The Tracker has no multisample keyzones: a synth preset ships the capture
   nearest MIDI 60 and relies on the device repitching it chromatically. A drum
-  kit ships as one concatenated sample in slice mode (48 slice max), which is
-  the idiomatic Tracker kit. Serum wavetables map onto the native wavetable
-  playback mode (2048-frame windows) unmodified.
+  kit ships as one concatenated sample in beat-slice mode (48 slice max, mode 5
+  — plain "Slice" mode 4 instead plays one selected slice repitched across the
+  keyboard, which is wrong for a kit), which is the idiomatic Tracker kit.
+  Serum wavetables map onto the native wavetable playback mode (2048-frame
+  windows) unmodified.
 """
 
 import logging
@@ -52,7 +54,7 @@ _HEADER_PREFIX = bytes([
 # Playback modes (header byte 76)
 _MODE_ONESHOT = 0
 _MODE_FWD_LOOP = 1
-_MODE_SLICE = 4
+_MODE_BEAT_SLICE = 5
 _MODE_WAVETABLE = 6
 
 # Automation is two bytes at env block +18/+19: (type, enabled). The spec's
@@ -302,7 +304,12 @@ class PolyendExporter:
         # Floor the scaled positions so a marker can never land after its
         # transient (worst case it starts ~num_frames/65535 frames early).
         slices = [min(65535, int(off / num_frames * 65535)) for off in offsets]
-        header = _build_header(name, num_frames, playback_mode=_MODE_SLICE, slices=slices)
+        # Beat-slice (mode 5), not plain slice (mode 4): plain Slice mode plays
+        # only the *currently selected* slice, repitched per key across the
+        # scale (manual §6.9 — "pads play the selected slice melodically").
+        # Beat Slice maps each pad to its own slice at original pitch, which is
+        # what a multi-drum kit needs.
+        header = _build_header(name, num_frames, playback_mode=_MODE_BEAT_SLICE, slices=slices)
         return header, pcm
 
     # ------------------------------------------------------------------
