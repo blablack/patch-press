@@ -51,9 +51,10 @@ _DIRECT: dict[str, str] = {
     "GUIRO": "guiro",
     "BELL": "bell",
     "CRASH": "cymbal_crash", "CRAS": "cymbal_crash",
+    "CHINA": "cymbal_crash", "SPLASH": "cymbal_crash",
     "RIDE": "cymbal_ride",
 }
-_HAT_TOKENS = {"CH", "OH", "HH", "HAT", "HIHAT"}
+_HAT_TOKENS = {"CH", "OH", "HH", "HAT", "HIHAT", "HATS", "HIHATS"}
 _TOM_TOKENS = {"TOM", "TOML", "TOMM", "TOMH"}
 _CONGA_TOKENS = {"CONGA", "CONGAS", "CONL", "CONM", "CONH", "BONGO", "BONGOS"}
 _CYMBAL_TOKENS = {"CYM", "CYMBAL"}
@@ -73,8 +74,18 @@ def classify_instrument(stem: str) -> str:
     Set-iteration over `tokens` would depend on PYTHONHASHSEED, which is
     randomized by default — a stem like 'SD_Rim' with two direct-token matches
     would return different categories across process launches.
+
+    A trailing digit run is stripped into an extra token alongside the original
+    (never replacing it), so a numbered-variant filename like 'Crash1'/'Tom2'
+    still matches 'CRASH'/'TOM' — a very common vendor convention for multiple
+    takes of the same piece — without weakening any existing exact match.
     """
-    tokens = {t.upper() for t in _TOKEN_RE.findall(stem)}
+    raw = {t.upper() for t in _TOKEN_RE.findall(stem)}
+    tokens = set(raw)
+    for t in raw:
+        stripped = t.rstrip("0123456789")
+        if stripped and stripped != t:
+            tokens.add(stripped)
 
     for key, cat in _DIRECT.items():
         if key in tokens:
