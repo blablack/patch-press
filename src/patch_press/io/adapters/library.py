@@ -1,12 +1,17 @@
+import logging
 import re
+from collections import defaultdict
 from pathlib import Path
 
+from ...analysis.drumkit import _PRIORITY, classify_instrument
 from ...analysis.drumkit import sort_key as _drumkit_sort_key
 from ...analysis.pitch import NOTE_NAMES
 from ...config.schema import LibrarySourceConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 from ..smpl import read_loop_points
+
+log = logging.getLogger(__name__)
 
 # Matches note+octave at end of stem, with optional _NNNN round-robin suffix.
 # Examples: A0, A#-1, Bb2, C3_0001, F#2_0003
@@ -230,6 +235,53 @@ class LibraryAdapter:
             samples=samples, source_metadata={"path": str(path)},
         )
 
+    def _kit_pads(self, subdirs: list[Path]) -> list[tuple[str, list[Path]]]:
+        """Resolve each instrument subfolder into one or more (label, wavs) pads,
+        in canonical kit-row order.
+
+        Usually one subfolder = one pad: its files are round-robin/velocity variants
+        of the same hit, and the folder name alone (via _drumkit_sort_key) says what
+        it is. Some vendor libraries instead bundle several genuinely different
+        instruments under one folder name (e.g. every cymbal/hat/ride hit dumped into
+        a single "Cymbals" folder) — trusting the folder name there silently collapses
+        them into one pad, keeping only whichever file sorts first. Classifying each
+        file by its own name (the same classify_instrument used for flat drumkit
+        folders, and for assemble-kits' walk_hit_tree — see analysis/drumkit_assemble.py
+        for the same fix applied to bag-of-hits libraries) recovers the real
+        per-instrument pads instead.
+
+        A category with only one file is folded back into the folder's dominant
+        category rather than split out on its own, so a single coincidentally-matching
+        filename can't fracture an otherwise uniform folder.
+        """
+        pads: list[tuple[tuple[int, str], str, list[Path]]] = []
+        for subdir in subdirs:
+            wavs = sorted(subdir.glob("*.wav"))
+            by_category: dict[str, list[Path]] = defaultdict(list)
+            for wav in wavs:
+                by_category[classify_instrument(wav.stem)].append(wav)
+
+            major = {cat: files for cat, files in by_category.items() if len(files) > 1}
+            if len(major) > 1:
+                strays = [w for cat, files in by_category.items() if len(files) <= 1 for w in files]
+                dominant = max(major, key=lambda c: len(major[c]))
+                major[dominant] = sorted(major[dominant] + strays)
+                log.info(
+                    f"{subdir.name}: split into {len(major)} pads by filename "
+                    f"({', '.join(sorted(major))}) — folder name alone would have "
+                    f"collapsed them into one"
+                )
+                for cat, files in major.items():
+                    pads.append(((_PRIORITY[cat], subdir.name), f"{subdir.name}/{cat}", files))
+            else:
+                # Uniform folder, or too little signal to split confidently (every
+                # category but one is a singleton): one pad, folder name drives both
+                # the label and the sort category — unchanged from before.
+                pads.append((_drumkit_sort_key(subdir.name), subdir.name, wavs))
+
+        pads.sort(key=lambda p: p[0])
+        return [(label, wavs) for _, label, wavs in pads]
+
     def _load_kit(
         self, name: str, path: Path, subdirs: list[Path], max_round_robins: int = 1, progress=None
     ) -> SampleSet:
@@ -240,23 +292,22 @@ class LibraryAdapter:
         For the kit case, subfolder names don't encode MIDI notes and we can't just
         default every un-parsed subdir to note=48 — every pad would collapse onto one
         MIDI slot and the exporter's `by_note[note][:2]` would drop every third
-        instrument. Mirror _load_drumkit_flat: sort by the drumkit canonical order and
-        assign a synthetic `note=i` per subdir. Exporter never serializes it (pad
-        position is document order in <soundSources>).
+        instrument. Mirror _load_drumkit_flat: resolve subdirs to pads in the drumkit
+        canonical order (_kit_pads — usually one pad per subdir, occasionally more, see
+        there) and assign a synthetic `note=i` per pad. Exporter never serializes it
+        (pad position is document order in <soundSources>).
         """
         parsed = [(subdir, _parse_note_rr(subdir.name)) for subdir in subdirs]
         is_kit = not any(r is not None for _, r in parsed)
 
         samples: list[Sample] = []
         if is_kit:
-            ordered = sorted(subdirs, key=lambda d: _drumkit_sort_key(d.name))
-            for i, subdir in enumerate(ordered):
-                wavs = sorted(subdir.glob("*.wav"))
+            for i, (label, wavs) in enumerate(self._kit_pads(subdirs)):
                 for rr, wav in enumerate(wavs[:max_round_robins], start=1):
                     samples.append(Sample(
                         note=i, velocity=100, round_robin=rr,
                         audio=AudioBuffer.from_file(wav),
-                        metadata={"source_file": str(wav), "instrument": subdir.name},
+                        metadata={"source_file": str(wav), "instrument": label},
                     ))
                     if progress is not None:
                         progress.update(1)
