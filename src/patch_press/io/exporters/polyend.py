@@ -72,6 +72,19 @@ _ENV_VOLUME = 0
 _ENV_WT_POSITION = 3
 _LFO_MAX_STEPS = 28  # steps enum: 0 = slowest subdivision, 28 = fastest
 
+# The .pti has no keyzones: one sample is repitched chromatically across the whole
+# keyboard, so the only lever on repitch artefacts is which capture we root on and how
+# far it then has to shift. Rooting on the CENTRE of the captured range (not a hardcoded
+# MIDI 60) minimises the worst-case shift distance — a bass captured 24-48 centres on ~36
+# instead of rooting on its top edge. Full-range captures (24-96) still centre on ~60, so
+# a Jupiter/Juno-style patch is unaffected.
+#
+# The centre is biased slightly HIGH because repitching is asymmetric: shifting a sample
+# DOWN (played below its root) muddies gently, shifting UP thins/chipmunks the formants
+# faster and can run out of one-shot tail. Biasing the root up puts more of the keyboard
+# below it — reached by the more forgiving downward shift. Small, ear-tunable (first pass).
+_ROOT_HIGH_BIAS = 2  # semitones the repitch centre is nudged above the captured midpoint
+
 
 def _scale16(frame: int, num_frames: int) -> int:
     """Map a frame index onto the header's uint16 position scale."""
@@ -233,10 +246,14 @@ class PolyendExporter:
 
     # ------------------------------------------------------------------
     def _export_synth(self, sset: SampleSet, name: str) -> tuple[bytes, bytes]:
-        # One sample per preset: nearest MIDI 60, then velocity closest to 100,
-        # then lowest round robin — the same preference order as the Deluge
-        # multisample zone picker, collapsed to a single winner.
-        s = min(sset.samples, key=lambda x: (abs(x.note - 60), abs(x.velocity - 100), x.round_robin))
+        # One sample per preset: nearest the (high-biased) centre of the captured note
+        # range, then velocity closest to 100, then lowest round robin. Centring on the
+        # actual range rather than a hardcoded MIDI 60 minimises the chromatic-repitch
+        # distance the device has to cover; see _ROOT_HIGH_BIAS.
+        notes = [x.note for x in sset.samples]
+        centre = round((min(notes) + max(notes)) / 2) + _ROOT_HIGH_BIAS
+        centre = min(max(centre, min(notes)), max(notes))
+        s = min(sset.samples, key=lambda x: (abs(x.note - centre), abs(x.velocity - 100), x.round_robin))
 
         data = _resample_to_target(s.audio.data, s.audio.sample_rate)
         pcm, num_frames = _pcm_bytes(data)
