@@ -88,7 +88,7 @@ standard-sunau==3.13.0
     #   librosa
 threadpoolctl==3.6.0
     # via scikit-learn
-tqdm==4.68.4
+tqdm==4.69.0
     # via patch-press (pyproject.toml)
 typing-extensions==4.16.0
     # via
