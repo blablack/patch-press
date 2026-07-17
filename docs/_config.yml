@@ -1,5 +1,5 @@
 title: patch-press
-description: Zero-manual-work Deluge sampler presets from VST plugins and sample libraries.
+description: Zero-manual-work sampler presets for Deluge and Polyend Tracker, from VST plugins and sample libraries.
 
 # just-the-docs via remote_theme — no gem install required.
 # GitHub Pages runs Jekyll natively; only pyyaml/jekyll-remote-theme need to be listed

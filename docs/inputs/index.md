@@ -34,7 +34,7 @@ Every scan command does roughly the same thing:
 
 You then run `patch-press batch "config-dir/*.yaml"` to actually export the presets.
 
-The YAML files are the seam between "figuring out what you've got" (scan) and "producing Deluge files" (batch). If the scan misidentified something — wrong profile, wrong root note, wrong root file — you can hand-edit the config and re-run just `sample` on that one, no re-scanning needed.
+The YAML files are the seam between "figuring out what you've got" (scan) and "producing preset files for your target device" (`batch --format deluge|pti`). If the scan misidentified something — wrong profile, wrong root note, wrong root file — you can hand-edit the config and re-run just `sample` on that one, no re-scanning needed.
 
 ## When scan writes a REVIEW flag
 

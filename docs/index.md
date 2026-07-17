@@ -10,7 +10,7 @@ nav_order: 1
 
 patch-press turns things you already have — a VST folder, a downloaded sample library, a bank of Serum wavetables — into ready-to-play presets for hardware samplers. It handles the tedious parts: playing every note, trimming silence, finding a clean loop point, laying WAVs out in the right folder structure, writing the preset files each target expects.
 
-The current release ships an exporter for the [Synthstrom Deluge](https://synthstrom.com/product/deluge/); the pipeline is format-agnostic and designed to grow additional targets over time.
+Two exporters ship today: the [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV) and the [Polyend Tracker](https://polyend.com/tracker/) family (self-contained `.pti`). The pipeline is format-agnostic and designed to grow additional targets over time.
 
 The pipeline is one command per source. No YAML written by hand in the happy path.
 
@@ -55,6 +55,7 @@ patch-press scan-library "~/samples/Mini From Mars" configs/Mini --type multisam
 
 # 3. Run the pipeline → export to your target device's format
 patch-press batch "configs/Mini/*.yaml" --path /media/DELUGE --format deluge
+# ...or --path staging/Polyend --format pti for a Polyend Tracker instead
 ```
 
 The scan commands write configs so you never have to. Editing a YAML is the escape hatch when an auto-detection got something wrong — one line change, re-run `sample`, done.
@@ -67,6 +68,6 @@ The scan commands write configs so you never have to. Editing a YAML is the esca
 - **[Inputs](inputs/)** — every source type patch-press understands, with its own page.
 - **[Pipeline](pipeline.html)** — what happens to your audio between input and output: trim, envelope, pitch, loop, normalize.
 - **[Loop detection](loops.html)** — how patch-press finds loop points, why sometimes it doesn't, what to do when it picks a bad one.
-- **[Outputs](outputs/)** — target-specific export formats. Currently: Deluge.
+- **[Outputs](outputs/)** — target-specific export formats. Currently: Deluge and Polyend Tracker.
 - **[Config reference](config-reference.html)** — the YAML schema you'll edit if you need to.
 - **[CLI reference](cli-reference.html)** — every command and every flag.

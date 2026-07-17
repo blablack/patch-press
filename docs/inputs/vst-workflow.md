@@ -17,7 +17,7 @@ flowchart LR
     S -->|re-renders one probe<br/>note per preset to<br/>classify sustain type| C[configs/*.yaml]
     C --> B[batch]
     B -->|renders every note<br/>across the range| A[analyze pipeline]
-    A --> D[Deluge SD card]
+    A --> D[SD card / preset files]
 ```
 
 ## 1. Capture state with patch-probe
@@ -64,7 +64,7 @@ For each config, `batch`:
 
 1. Renders the plugin across `[start-note, end-note]` at `note-step` intervals (default: C1 to C6 every 3 semitones).
 2. Runs the [analysis pipeline](../pipeline.html) — trim, envelope, loop detect, normalize.
-3. Writes the Deluge preset — [XML in `SYNTHS/`, WAVs in `SAMPLES/`](../outputs/deluge.html).
+3. Writes the preset in whatever `--format` you asked for — [Deluge XML in `SYNTHS/`, WAVs in `SAMPLES/`](../outputs/deluge.html), or a self-contained [Polyend Tracker `.pti`](../outputs/polyend.html) with `--format pti`.
 
 If the output already exists, `batch` skips it. Use `--no-skip` to re-render.
 
@@ -85,7 +85,7 @@ patch-press scan-from-probe ~/patch-probe/Dexed configs/Dexed
 patch-press batch "configs/Dexed/*.yaml" --path /media/DELUGE --format deluge
 ```
 
-That's it. Every Dexed preset you captured is now a Deluge synth preset with a full multisample.
+That's it. Every Dexed preset you captured is now a Deluge synth preset with a full multisample (swap `--format pti` for a Polyend Tracker `.pti` instrument instead — see [Outputs](../outputs/)).
 
 ## `scan-from-probe` options
 

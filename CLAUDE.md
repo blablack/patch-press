@@ -1,6 +1,6 @@
 # patch-press
 
-Automatically captures VST presets or loads sample libraries and exports Deluge-ready XML + WAV presets. Zero manual YAML writing is the goal — scan commands handle discovery, YAML files are the escape hatch when auto-detection gets something wrong.
+Automatically captures VST presets or loads sample libraries and exports ready-to-play presets for hardware samplers — Deluge (XML + WAV) or Polyend Tracker (self-contained `.pti`). Zero manual YAML writing is the goal — scan commands handle discovery, YAML files are the escape hatch when auto-detection gets something wrong.
 
 ## Pipeline
 
@@ -10,7 +10,7 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
                               analyze_sampleset()
                               (trim, envelope, pitch*, loop, normalize)
                                         ↓
-                              DelugeExporter → WAV files + XML
+                              Exporter (--format deluge|pti) → preset files
 ```
 
 *Pitch verification runs only for library sources, never for VST.
@@ -40,4 +40,4 @@ Four profiles exist: `synth` (melodic, full range), `pad` (sustained + evolving/
 - `--type drumkit`: each WAV in the flat folder becomes one kit pad; the instrument is identified purely from filename keywords (`analysis/drumkit.py:classify_instrument` — BD/SD/CH/OH/Clap/Rim/Tom Low·Mid·Hi/Conga Low·Mid·Hi/Cowbell/Claves/Maracas/Cym/etc, unrecognized tokens fall to `other` rather than being dropped). Deluge kit XML has no explicit note attribute — pad order is purely `<soundSources>` document order — so pads are sorted into the canonical kick → snare → closed/open hat → clap/percussion → cymbals → toms (low→high) → congas (low→high) → other order, matching Synthstrom's own factory kits (TR-808/TR-909/R-100). A folder where every file lands in the same single category (e.g. a chromatic one-instrument folder) is flagged REVIEW rather than silently shipped as a real kit.
 - `assemble-kits`: for libraries that ship as a *browsing bank* rather than pre-made kits — one subfolder per instrument category, each subdivided by a descriptive "flavor" taxonomy that repeats across categories (Clean/Color/Tape/Various, etc — confirmed against a real vendor-shipped kit that it's not a guessed convention, see `analysis/drumkit_assemble.py`). Generates one kit per shared flavor tag (a tag only counts if it spans ≥2 instrument families — `--min-categories`), picking one file per category from that flavor's subfolder, falling back to that category's `Various` pool and then to any file when the exact flavor isn't available for that pad (flagged REVIEW). The resolved file list is written into `source.files` in the YAML once at scan time — `sample`/`batch` just load that fixed list, so a wrong pick is a one-line hand-edit, not a re-scan. **Scope boundary**: this only fires when flavor tags live in shared subfolder names; libraries where descriptive words only appear inside flat filenames (no shared subfolder taxonomy) aren't handled — that would need real audio-feature coherence, not built here.
 - Wavetables (Serum-format, `clm` chunk, exact multiple of 2048 samples per cycle) are a different pipeline entirely — no trim/envelope/loop/normalize, the file ships to the SD card unmodified and its sound comes from the Deluge's own wavetable-scan oscillator. `scan-wavetables` analyses each file's own spectral content (brightness, flatness, frame-to-frame timbral variance) to pick an archetype (pad/pluck/bass/lead/drone/evolving_pad) and WT-position/LFO2-depth — see `docs/inputs/wavetables.md` for the rationale and `analysis/wavetable.py` for the thresholds (first pass, tune by ear like the loop-detection constants elsewhere in this codebase)
-- Output is always Deluge format; `output.name` in the config sets the preset name; the SD card output directory is supplied via the CLI `--path` argument
+- Output format is selected per-run via `--format deluge|pti` (Deluge XML+WAV, or self-contained Polyend Tracker `.pti` — see `docs/outputs/`); `output.name` in the config sets the preset name; the SD card / output directory is supplied via the CLI `--path` argument

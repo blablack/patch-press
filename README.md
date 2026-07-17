@@ -1,12 +1,14 @@
 # patch-press
 
-Captures VST/CLAP plugin presets and sample libraries and exports Deluge-ready XML + WAV presets. The goal is zero manual YAML writing — scan commands auto-generate configs from patch-probe output, CLAP plugin directories, or sample library folders. YAML files are the escape hatch when auto-detection needs a nudge.
+Captures VST/CLAP plugin presets and sample libraries and exports ready-to-play presets for hardware samplers — [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV) or [Polyend Tracker](https://polyend.com/tracker/) (self-contained `.pti`), picked with `--format`. The goal is zero manual YAML writing — scan commands auto-generate configs from patch-probe output, CLAP plugin directories, or sample library folders. YAML files are the escape hatch when auto-detection needs a nudge.
+
+Full docs: https://blablack.github.io/patch-press/
 
 ## Prerequisites
 
 - Python ≥ 3.14
 - [patch-render](../patch-render) — companion JUCE-based audio host that drives VST/CLAP rendering
-- A Deluge SD card (or a directory laid out like one) as the output target
+- A target output location: a Deluge SD card, a Polyend Tracker SD card, or a directory laid out like either (see [Output layout](#output-layout))
 
 ## Installation
 
@@ -15,6 +17,8 @@ pip install -e .
 ```
 
 ## Workflows
+
+Every workflow below ends the same way: `batch`/`sample` with `--format deluge` or `--format pti`. Examples use `deluge`; swap the flag (and `--path`) for a Polyend Tracker `.pti` instrument instead — see [Output layout](#output-layout).
 
 ### VST presets (via patch-probe)
 
@@ -84,7 +88,7 @@ All scan commands accept:
 | Option | Default | Description |
 |---|---|---|
 | `--path PATH` | required | Output root directory |
-| `--format FORMAT` | required | Output format (`deluge`) |
+| `--format FORMAT` | required | Output format: `deluge` or `pti` |
 | `--workers N` | 1 | Parallel analysis threads |
 | `--no-skip` | — | Re-run even if output already exists |
 
@@ -128,12 +132,14 @@ analysis:
   normalize: per_set    # per_sample | per_set | none
 
 output:
-  name: MyPreset        # preset name used in the Deluge XML and file paths
+  name: MyPreset        # preset name used in the exported preset and its file paths
 ```
 
 Library configs use `source.type: library` with `source.path` instead of plugin/preset fields.
 
-## Deluge output layout
+## Output layout
+
+### `--format deluge`
 
 ```
 <--path>/
@@ -147,6 +153,17 @@ Library configs use `source.type: library` with `source.path` instead of plugin/
 ```
 
 Copy the output directory to the matching location on the SD card (`SYNTHS/` or `KITS/`).
+
+### `--format pti`
+
+Flat — one self-contained `.pti` file per preset, no companion WAVs:
+
+```
+<--path>/
+  MyPreset.pti
+```
+
+Copy anywhere on the Tracker's SD card and load from the file browser. Multisamples and kits each collapse to the single sample nearest the preset's root note (the `.pti` format has no keyzones); see [docs/outputs/polyend.md](docs/outputs/polyend.md) for the full mapping and hardware caveats.
 
 ## Library filename conventions
 
