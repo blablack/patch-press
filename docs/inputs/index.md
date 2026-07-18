@@ -8,7 +8,7 @@ permalink: /inputs/
 
 # Inputs
 
-patch-press can consume seven different kinds of source. Each has a dedicated scan command that walks the source, figures out what it's looking at, and writes one YAML config per resulting preset.
+patch-press can consume eight different kinds of source. Each has a dedicated scan command that walks the source, figures out what it's looking at, and writes one YAML config per resulting preset.
 
 ## Which command do I want?
 
@@ -21,6 +21,7 @@ patch-press can consume seven different kinds of source. Each has a dedicated sc
 | A **drum kit** in a flat folder | Loose one-shot WAVs; instrument encoded in filename | `scan-library --type drumkit` | [Sample libraries](sample-libraries.html) |
 | A folder of **single-note oneshots** | Each WAV is its own preset (Monosounds-style) | `scan-oneshots` | [Oneshots](oneshots.html) |
 | **Serum-format wavetables** | Each WAV = one wavetable; 2048-sample cycles | `scan-wavetables` | [Wavetables](wavetables.html) |
+| A **Bitwig `.multisample`** instrument | ZIP of WAVs + a `multisample.xml` mapping | `scan-bitwig` | [Bitwig multisamples](bitwig.html) |
 | A **bag-of-hits** drum library | Instrument categories × shared "flavor" subfolders | `assemble-kits` | [Kit assembly](kit-assembly.html) |
 
 ## The rough shape of every scan
@@ -45,5 +46,6 @@ Several scan commands can flag a config as REVIEW (in a comment at the top of th
 - **`scan-wavetables`** — file length isn't a clean multiple of 2048 samples.
 - **`scan-library --type drumkit`** — every filename landed in the same instrument category (probably not a real kit).
 - **`assemble-kits`** — a category fell back beyond its own flavor to `Various` or "any file".
+- **`scan-bitwig`** — most zones are fixed-pitch (`track="0"`), likely a percussion map rather than a repitched instrument.
 
 REVIEW configs still get written; they're not skipped. The flag is a nudge to eyeball the config before running `batch`, not a hard failure.

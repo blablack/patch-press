@@ -40,6 +40,19 @@ class LibrarySourceConfig:
 
 
 @dataclass
+class BitwigSourceConfig:
+    # A Bitwig `.multisample` archive (a zip of WAVs + a `multisample.xml` mapping).
+    # Unlike a raw WAV library, the note mapping, velocity zones and loop points are all
+    # authoritative metadata read from the XML — no filename parsing or loop detection.
+    path: Path
+    # A `.multisample` can layer several velocity zones per note. Hardware sampler
+    # presets don't do velocity layering (the Deluge/Polyend exporters collapse to one
+    # sample per note anyway), so the adapter keeps a single layer per note: the zone
+    # whose top velocity is nearest this target. Hand-edit to pick a softer/louder layer.
+    velocity: int = 100
+
+
+@dataclass
 class WavetableSourceConfig:
     path: Path
 
@@ -105,7 +118,7 @@ class OutputConfig:
 
 @dataclass
 class RunConfig:
-    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig, WavetableSourceConfig]
+    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig, BitwigSourceConfig, WavetableSourceConfig]
     capture: CaptureConfig
     analysis: AnalysisConfig
     output: OutputConfig

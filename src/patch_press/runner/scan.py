@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import zipfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -860,6 +861,114 @@ def scan_oneshots(
         )
 
         out = config_dir / f"{_sanitize(preset_name)}.yaml"
+        out = _write_config_yaml(out, content, used_stems)
+        summary.written.append(out)
+        if flags:
+            summary.reviews.append(
+                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
+            )
+
+    return summary
+
+
+def scan_bitwig(
+    folder: Path,
+    config_dir: Path,
+    profile: str | None = None,
+    note_step: int = DEFAULT_NOTE_STEP,
+    debug: bool = False,
+) -> ScanSummary:
+    """Generate one config per Bitwig `.multisample` archive found under `folder`.
+
+    Everything needed to classify the preset is authoritative metadata in the archive's
+    `multisample.xml` — no rendering or audio classification. The loop flag is bimodal per
+    file (Bitwig writes `mode="loop"` on every zone of a sustaining articulation and
+    `mode="off"` on every zone of a staccato/one-shot one), so the profile follows it
+    directly: all-loop → `synth` (loops the authored sustain), otherwise → `pluck` (ships
+    the one-shot, no loop). Root notes are ground truth, so pitch verification is disabled.
+
+    Archives are discovered recursively and their folder position under `folder` is
+    mirrored into both the config tree and `output.subfolder`, so a vendor pack's own
+    category folders (e.g. "Orchestral Brass/") survive onto the SD card.
+    """
+    from ..io.adapters.bitwig import _multisample_xml_name, parse_multisample_xml
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    archives = sorted(folder.rglob("*.multisample"))
+    if debug:
+        archives = archives[:5]
+    summary = ScanSummary(total=len(archives))
+    used_stems: set[str] = set()
+
+    for archive in tqdm(archives, desc=f"Scanning {folder.name}", unit="file"):
+        preset_name = archive.stem
+        try:
+            with zipfile.ZipFile(archive) as z:
+                xml_name = _multisample_xml_name(z.namelist())
+                if xml_name is None:
+                    raise ValueError("no multisample.xml inside archive")
+                zones = parse_multisample_xml(z.read(xml_name))
+        except (zipfile.BadZipFile, ValueError) as exc:
+            tqdm.write(f"  {archive.name}: SKIPPED ({exc})")
+            continue
+
+        if not zones:
+            tqdm.write(f"  {archive.name}: SKIPPED (no mapped samples)")
+            continue
+
+        n = len(zones)
+        looped = sum(1 for zn in zones if zn.loop_start is not None)
+        fixed = sum(1 for zn in zones if not zn.track)
+        roots = sorted({zn.root for zn in zones})
+
+        if profile is not None:
+            preset_profile = profile
+        else:
+            preset_profile = "synth" if looped > n / 2 else "pluck"
+
+        flags: list[str] = []
+        if fixed > n / 2:
+            flags.append(
+                "fixed-pitch samples (percussion?) — each key maps to its own hit; "
+                "verify keyboard mapping or split into a kit"
+            )
+        tqdm.write(
+            f"  {preset_name} → {preset_profile} "
+            f"({len(roots)} notes, {looped}/{n} looped)"
+            + (f" [{', '.join(flags)}]" if flags else "")
+        )
+
+        rel = archive.parent.relative_to(folder).as_posix()
+        subfolder = "" if rel == "." else rel
+
+        review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
+        subfolder_line = f'  subfolder: "{subfolder}"\n' if subfolder else ""
+        content = (
+            f"{review_line}"
+            f"# {n} samples, {len(roots)} notes [{roots[0]}-{roots[-1]}], {looped} looped\n"
+            f"source:\n"
+            f"  type: bitwig\n"
+            f"  path: {archive}\n"
+            f"\n"
+            f"profile: {preset_profile}\n"
+            f"\n"
+            f"analysis:\n"
+            f"  pitch_verify: false\n"
+            f"\n"
+            f"capture:\n"
+            f"  note_step: {note_step}\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{preset_name}"\n'
+            f"{subfolder_line}"
+        )
+
+        target_dir = config_dir
+        for comp in subfolder.split("/"):
+            if comp:
+                target_dir = target_dir / comp
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out = target_dir / f"{_sanitize(preset_name)}.yaml"
         out = _write_config_yaml(out, content, used_stems)
         summary.written.append(out)
         if flags:

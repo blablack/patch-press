@@ -7,6 +7,7 @@ import yaml
 from ..profiles import load_profile
 from .schema import (
     AnalysisConfig,
+    BitwigSourceConfig,
     CaptureConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
@@ -94,6 +95,11 @@ def load_config(path: Path) -> RunConfig:
             note=src.get("note"),
             drumkit=src.get("drumkit", False),
             files=[_abspath(p) for p in src["files"]] if "files" in src else None,
+        )
+    elif src["type"] == "bitwig":
+        source = BitwigSourceConfig(
+            path=_abspath(src["path"]),
+            velocity=src.get("velocity", 100),
         )
     elif src["type"] == "wavetable":
         source = WavetableSourceConfig(path=_abspath(src["path"]))

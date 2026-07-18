@@ -8,12 +8,14 @@ from ..analysis.normalize import normalize_sample
 from ..analysis.pipeline import analyze_sampleset, classify_sampleset
 from ..analysis.trim import trim_silence
 from ..config.schema import (
+    BitwigSourceConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
     RunConfig,
     VSTSourceConfig,
     WavetableSourceConfig,
 )
+from ..io.adapters.bitwig import BitwigAdapter
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.adapters.vst import VSTAdapter
@@ -54,8 +56,12 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             pitch_verify=False,
             tempo_bpm=config.analysis.tempo_bpm or config.capture.tempo_bpm,
         )
-    elif isinstance(config.source, LibrarySourceConfig):
-        adapter = LibraryAdapter(config.source)
+    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig)):
+        adapter = (
+            BitwigAdapter(config.source)
+            if isinstance(config.source, BitwigSourceConfig)
+            else LibraryAdapter(config.source)
+        )
         sset = adapter.capture(
             name=config.name or None,
             max_round_robins=config.capture.round_robins,
@@ -78,8 +84,12 @@ def classify(config: RunConfig, workers: int = 1, save_path: Path | None = None)
         adapter = VSTAdapter(config.source) if isinstance(config.source, VSTSourceConfig) else CLAPAdapter(config.source)
         sset = adapter.capture(config.capture, name=config.name or None)
         tempo_bpm = config.analysis.tempo_bpm or config.capture.tempo_bpm
-    elif isinstance(config.source, LibrarySourceConfig):
-        adapter = LibraryAdapter(config.source)
+    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig)):
+        adapter = (
+            BitwigAdapter(config.source)
+            if isinstance(config.source, BitwigSourceConfig)
+            else LibraryAdapter(config.source)
+        )
         sset = adapter.capture(
             name=config.name or None,
             max_round_robins=config.capture.round_robins,

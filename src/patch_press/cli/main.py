@@ -26,6 +26,7 @@ from ..runner.scan import (
     DEFAULT_DURATION_S,
     DEFAULT_NOTE_STEP,
     note_name_to_midi,
+    scan_bitwig,
     scan_clap,
     scan_from_probe,
     scan_kit_assemble,
@@ -167,6 +168,24 @@ def cmd_scan_oneshots(args: argparse.Namespace) -> None:
         folder=args.folder.resolve(),
         config_dir=args.config_dir,
         profile=args.profile,
+        debug=args.debug,
+    )
+    print(
+        f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
+    )
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
+            print(f"  - {name}: {detail}")
+
+
+def cmd_scan_bitwig(args: argparse.Namespace) -> None:
+    summary = scan_bitwig(
+        folder=args.folder.resolve(),
+        config_dir=args.config_dir,
+        profile=args.profile,
+        note_step=args.note_step,
         debug=args.debug,
     )
     print(
@@ -518,6 +537,30 @@ def main() -> None:
         help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
     )
 
+    # patch-press scan-bitwig "input/Orchestral Tools" configs/OrchestralTools
+    scan_bitwig_p = sub.add_parser(
+        "scan-bitwig",
+        help="Generate one config per Bitwig .multisample archive (searched recursively)",
+    )
+    scan_bitwig_p.add_argument(
+        "folder", type=Path, help="Folder containing .multisample archives (searched recursively)"
+    )
+    scan_bitwig_p.add_argument(
+        "config_dir", type=Path, help="Directory to write generated YAML configs"
+    )
+    scan_bitwig_p.add_argument(
+        "--profile",
+        choices=["pluck", "synth", "pad", "drums"],
+        default=None,
+        help="Override auto-detected profile (from the XML loop flag); default: auto",
+    )
+    scan_bitwig_p.add_argument(
+        "--note-step",
+        type=_note_step_arg,
+        default=DEFAULT_NOTE_STEP,
+        help=f"Semitones between kept notes (1=every mapped note; default: {DEFAULT_NOTE_STEP})",
+    )
+
     # patch-press scan-wavetables "input/Echo Sound Works Core Tables/Basics" configs/EchoTables
     scan_wavetables_p = sub.add_parser(
         "scan-wavetables",
@@ -607,6 +650,8 @@ def main() -> None:
         cmd_scan_library(args)
     elif args.command == "scan-oneshots":
         cmd_scan_oneshots(args)
+    elif args.command == "scan-bitwig":
+        cmd_scan_bitwig(args)
     elif args.command == "scan-wavetables":
         cmd_scan_wavetables(args)
     elif args.command == "assemble-kits":

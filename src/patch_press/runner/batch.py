@@ -3,7 +3,15 @@ from pathlib import Path
 
 from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
-from ..config.schema import CLAPSourceConfig, LibrarySourceConfig, RunConfig, VSTSourceConfig, WavetableSourceConfig
+from ..config.schema import (
+    BitwigSourceConfig,
+    CLAPSourceConfig,
+    LibrarySourceConfig,
+    RunConfig,
+    VSTSourceConfig,
+    WavetableSourceConfig,
+)
+from ..io.adapters.bitwig import BitwigAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.exporters import get_exporter
 from .pipeline import run
@@ -27,6 +35,11 @@ def _expected_notes(config: RunConfig) -> int:
         try:
             return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)
         except OSError:
+            return 0
+    if isinstance(src, BitwigSourceConfig):
+        try:
+            return BitwigAdapter(src).expected_count(cap.round_robins, cap.note_step)
+        except (OSError, ValueError):
             return 0
     if isinstance(src, WavetableSourceConfig):
         # scan_wavetables emits one config per file; each contributes exactly one

@@ -55,6 +55,17 @@ patch-press scan-library "~/samples/808 Kit" configs/808 --type kit
 patch-press batch "configs/Mini/*.yaml" --path /media/DELUGE/SYNTHS/Mini --format deluge
 ```
 
+### Bitwig multisample
+
+```bash
+# One .multisample archive (ZIP of WAVs + multisample.xml) per preset, searched recursively.
+# Root notes and loops are read from the XML — no filename parsing or loop detection.
+patch-press scan-bitwig "~/Downloads/Orchestral Tools" configs/OrchestralTools
+
+# Export
+patch-press batch "configs/OrchestralTools/**/*.yaml" --path /media/DELUGE --format deluge
+```
+
 ## Commands
 
 | Command | Purpose |
@@ -64,6 +75,7 @@ patch-press batch "configs/Mini/*.yaml" --path /media/DELUGE/SYNTHS/Mini --forma
 | `scan-from-probe <probe-dir> <config-dir>` | Generate configs from patch-probe YAMLs |
 | `scan-clap <plugin.clap> <preset-dir> <config-dir>` | Generate configs from CLAP preset files |
 | `scan-library <folder> <config-dir>` | Generate configs from a sample library |
+| `scan-bitwig <folder> <config-dir>` | Generate configs from Bitwig `.multisample` archives (recursive) |
 | `classify <configs/*.yaml>` | Print sound type classification without exporting |
 | `profiles` | List available profiles |
 
