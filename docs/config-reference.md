@@ -110,7 +110,7 @@ Controls the [analysis pipeline](pipeline.html).
 | `loop` | `bool` | `false` | Attempt loop detection. Enabled by `pad` and `synth` profiles. |
 | `loop_use_tempo` | `bool` | `false` | Include BPM-synced candidates in the loop search. |
 | `loop_quality_threshold` | `float` | `0.75` | Minimum score for a candidate to be accepted. |
-| `loop_crossfade_ms` | `float` | `10.0` | Crossfade duration at the loop seam. |
+| `loop_crossfade_ms` | `float` | *(unset)* | Crossfade duration at the loop seam, for **detected** loops. Unset (default) = **adaptive**: chosen per note from the fundamental period and the residual seam discontinuity (a fixed millisecond value is wrong across the register — too short to cover one cycle on bass, needlessly long on treble). Set a number to force a fixed length. Authored loops (WAV `smpl` chunks, Bitwig `.multisample`) ignore this and keep their own fade. |
 | `tempo_bpm` | `float?` | none | Overrides `capture.tempo_bpm` for analysis-only tempo decisions (leave unset unless you want them different). |
 | `normalize` | `str` | `per_set` | `per_sample`, `per_set`, or `none`. |
 | `classify_drums` | `bool` | `false` | Run filename-keyword drum classification. Enabled by `drums` profile. |

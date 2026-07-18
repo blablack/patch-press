@@ -63,7 +63,7 @@ Out-of-tolerance samples are **flagged**, not rejected. The generated preset sti
 
 Given a sustained-region audio buffer, find two sample indices `(start, end)` such that playing `audio[start:end]` on repeat is imperceptible from continuing to hold the original note.
 
-patch-press runs three candidate hunters (chroma-based pitch matching, tempo-synced quarter-note multiples, period-aligned brute force), gates the results on seam quality and timbre continuity, scores the survivors with length and placement rewards, and picks the winner. A 10 ms crossfade smooths any residual seam.
+patch-press runs three candidate hunters (chroma-based pitch matching, tempo-synced quarter-note multiples, period-aligned brute force), gates the results on seam quality and timbre continuity, scores the survivors with length and placement rewards, and picks the winner. An adaptive crossfade — sized in fundamental periods per note and scaled by the residual seam discontinuity — smooths any leftover seam.
 
 If nothing passes the gates, a fallback takes the central 50% of the detected sustain and snaps to zero-crossings.
 

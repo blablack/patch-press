@@ -98,10 +98,13 @@ class AnalysisConfig:
     loop: bool = False
     loop_use_tempo: bool = False
     loop_quality_threshold: float = 0.8
-    # Flat 10 ms for now (synths + pads). Covers ~1 fundamental period down to the low
-    # register and gives slop for non-phase-aligned (evolving) loops, without smearing
-    # movement. May differentiate per sound type later — only synths are being tested now.
-    loop_crossfade_ms: float = 10.0
+    # Loop crossfade length for *detected* loops (VST/CLAP renders, non-smpl WAV libraries).
+    # None = adaptive: per-note fundamental period scaled by the residual seam discontinuity
+    # (analysis/loop.py:adaptive_crossfade_ms) — the right length varies by an order of
+    # magnitude across the register, so a single millisecond value can't be correct. Set a
+    # number to force a fixed length instead (escape hatch). Authored loops (smpl chunks,
+    # Bitwig .multisample) ignore this entirely — they ship with their own fade.
+    loop_crossfade_ms: float | None = None
     tempo_bpm: float | None = None
     normalize: str = "per_set"  # "per_sample" | "per_set" | "none"
     classify_drums: bool = False

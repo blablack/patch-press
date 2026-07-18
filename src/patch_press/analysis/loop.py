@@ -40,6 +40,19 @@ _AMP_DISC_THRESHOLD = 0.25
 # catches opposite-slope splices (rising vs falling) while passing matched slopes.
 _DERIV_DISC_THRESHOLD = 0.50
 
+# Adaptive crossfade duration (see adaptive_crossfade_ms). A fixed millisecond fade is
+# wrong across the register: shorter than one fundamental cycle on bass (can't mask a
+# phase step → clicks), and many cycles on treble (needlessly smears movement). So the
+# fade is measured in fundamental *periods*, scaled by how much residual discontinuity is
+# actually left at the seam (_seam_disc), then bounded. Range deliberately narrow — a big
+# fade is not the fix for a bad seam (that's loop-point selection / the non-loopable
+# gate); it only covers the leftover mismatch. Tune by ear like the other loop constants.
+_XFADE_BASE_PERIODS = 1.5    # fundamental cycles when the seam is already clean (d≈0)
+_XFADE_DISC_PERIODS = 2.5    # extra cycles added as d rises 0→1 (→ 4.0 cycles at threshold)
+_XFADE_FLOOR_MS = 3.0        # never shorter than this (guards treble, where a cycle is <1 ms)
+_XFADE_CAP_MS = 60.0         # never longer than this (guards bass smear; bake also caps to loop_body/4)
+_XFADE_FALLBACK_MIN_DISC = 0.5  # central-region fallback loops aren't phase-validated → floor d here
+
 # Quarter-note multipliers covering common tempo-synced delay/LFO rates
 _TEMPO_SUBDIVISIONS = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0]
 
@@ -619,6 +632,37 @@ def validate_splice_reason(mono: np.ndarray, start: int, end: int) -> str:
     return ""
 
 
+def adaptive_crossfade_ms(
+    audio: AudioBuffer, note: int, loop_points: tuple[int, int], min_disc: float = 0.0
+) -> float:
+    """Crossfade length (ms) for a *detected* loop, from the note's period and its raw seam.
+
+    Two signals (see the _XFADE_* constants):
+      * The fundamental period (from `note`) sets the unit — a crossfade must span at least
+        ~one cycle to mask a phase step, and a cycle is 25 ms on a low bass note but <1 ms on
+        a treble one, so a fixed millisecond value is wrong at one end or the other.
+      * The residual seam discontinuity `_seam_disc` (peak-normalized amp/derivative step on
+        the RAW pre-crossfade audio) says how much is actually left to hide after loop-point
+        selection. A clean, phase-aligned splice needs ~`_XFADE_BASE_PERIODS` cycles; a rough
+        one scales up toward `+ _XFADE_DISC_PERIODS` cycles.
+
+    `min_disc` floors the discontinuity term for loops we know aren't phase-validated (the
+    central-region fallback). The result is clamped to [_XFADE_FLOOR_MS, _XFADE_CAP_MS];
+    bake_loop_crossfade further caps it to a quarter of the loop body and the room before
+    loop_start, so an over-long request can never eat the loop.
+    """
+    start, end = loop_points
+    mono = audio.to_mono()
+    if start < 1 or end < 2 or end > len(mono):
+        return _XFADE_FLOOR_MS
+    period_ms = 1000.0 / midi_to_hz(note)
+    amp_disc, deriv_disc = _seam_disc(mono, start, end)
+    d = min(1.0, max(min_disc, amp_disc / _AMP_DISC_THRESHOLD, deriv_disc / _DERIV_DISC_THRESHOLD))
+    periods = _XFADE_BASE_PERIODS + _XFADE_DISC_PERIODS * d
+    ms = periods * period_ms
+    return max(_XFADE_FLOOR_MS, min(ms, _XFADE_CAP_MS))
+
+
 def _chroma_fingerprints(
     mono: np.ndarray, sr: int, start: int, end: int, hop: int
 ) -> list[tuple[int, np.ndarray]]:
@@ -1025,8 +1069,9 @@ def find_loop_candidates(
     # (e.g. 50 ms at A5) are not discarded by the 1s _MIN_GAP_S floor.
     min_loop = max(int(0.05 * sr), (4 * t_wave) if t_wave else int(_MIN_GAP_S * sr))
 
-    # Window for phase-lock / seam-match: cover the loop crossfade (~10 ms) plus a couple of
-    # periods, so we align exactly the samples the crossfade blends.
+    # Window for phase-lock / seam-match: a couple of fundamental periods. Locking the wrap
+    # endpoints to matching phase keeps the whole blended span aligned through periodicity, so
+    # this need not grow with the (now note-adaptive) crossfade length — see adaptive_crossfade_ms.
     lock_win = max(2 * t_wave, int(0.012 * sr)) if t_wave else 0
 
     # Window for the peak/asymmetry drift sensor: a few fundamental periods so the peak is

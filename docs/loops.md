@@ -68,7 +68,7 @@ All candidates from all three hunters go into a common pool and are subjected to
 - **Length reward** — longer loops get bonus points, saturating at 1.5 seconds. This is deliberate: a 200 ms loop with a perfect seam is worse than a 1.5 s loop with a very good seam, because short loops make a static sound feel unnaturally "small".
 - **Placement penalty** — loops that sit deep inside the sustain (not straddling the attack or release) are preferred. Reduces the chance of "loop starts, and something audibly changes because we're still in the attack".
 
-The winner's `(loop_start, loop_end)` gets embedded in the exported preset (in the Deluge XML, for the Deluge target). A 10 ms crossfade at the join further smooths any residual seam.
+The winner's `(loop_start, loop_end)` gets embedded in the exported preset (in the Deluge XML, for the Deluge target). A crossfade at the join further smooths any residual seam. Its length is **adaptive**: measured in fundamental periods (from the note) and scaled by how much discontinuity is actually left at the seam — a crossfade must span at least ~one cycle to mask a phase step, and a cycle is ~25 ms on a low bass note but under 1 ms on a treble one, so a single millisecond value can't be right everywhere. A clean, phase-aligned splice gets ~1.5–2 cycles; a rougher one scales up toward ~4, bounded so it never over-smears or eats the loop. Set `analysis.loop_crossfade_ms` to force a fixed length instead.
 
 ### The fallback
 

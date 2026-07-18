@@ -62,6 +62,8 @@ from .classify import classify_drum
 from .envelope import analyze_envelope
 from .loop import (
     _MIN_LOOP_RANK_S,
+    _XFADE_FALLBACK_MIN_DISC,
+    adaptive_crossfade_ms,
     bake_loop_crossfade,
     central_fallback_loop,
     find_loop_candidates,
@@ -213,12 +215,17 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     )
 
 
-def _bake_sample_loop(sample: Sample, crossfade_ms: float) -> Sample:
+def _bake_sample_loop(sample: Sample, crossfade_ms: float | None) -> Sample:
     """Bake the loop crossfade for a sample that kept its loop after the set-level vote.
 
     Run once, after pluck classification (Fix #1), so a loop later stripped by a set-level
-    "Pluck" vote never leaves a baked crossfade in the exported audio. Fallback loops use a
-    longer crossfade, matching the original inline behaviour.
+    "Pluck" vote never leaves a baked crossfade in the exported audio.
+
+    `crossfade_ms` None (the default) means adaptive: the length is derived per note from the
+    fundamental period and the raw seam discontinuity (analysis/loop.py:adaptive_crossfade_ms),
+    which is right across the whole register where a fixed millisecond value isn't. A number
+    forces that fixed length (escape hatch), keeping the original fallback-gets-2x behaviour.
+    The chosen length is recorded in analysis["loop_crossfade_ms"] for inspection.
     """
     if sample.loop_points is None:
         return sample
@@ -226,12 +233,23 @@ def _bake_sample_loop(sample: Sample, crossfade_ms: float) -> Sample:
     # smear the seam the author chose. Ship it verbatim.
     if sample.analysis.get("loop_source") == "authored_smpl":
         return sample
-    ms = crossfade_ms * 2 if sample.analysis.get("loop_warning") == "fallback_central_region" else crossfade_ms
+    fallback = sample.analysis.get("loop_warning") == "fallback_central_region"
+    if crossfade_ms is None:
+        ms = adaptive_crossfade_ms(
+            sample.audio,
+            sample.note,
+            sample.loop_points,
+            min_disc=_XFADE_FALLBACK_MIN_DISC if fallback else 0.0,
+        )
+    else:
+        ms = crossfade_ms * 2 if fallback else crossfade_ms
     if ms <= 0:
         return sample
     start, end = sample.loop_points
     baked = bake_loop_crossfade(sample.audio, start, end, ms)
-    return dataclasses.replace(sample, audio=baked)
+    return dataclasses.replace(
+        sample, audio=baked, analysis={**sample.analysis, "loop_crossfade_ms": round(ms, 2)}
+    )
 
 
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
