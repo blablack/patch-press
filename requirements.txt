@@ -52,7 +52,7 @@ packaging==26.2
     #   pooch
 patch-render==0.3.0
     # via patch-press (pyproject.toml)
-platformdirs==4.10.0
+platformdirs==4.10.1
     # via pooch
 pooch==1.9.0
     # via librosa
