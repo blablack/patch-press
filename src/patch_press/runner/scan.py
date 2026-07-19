@@ -389,7 +389,7 @@ def scan_from_probe(
     long_hold_s = sustain_duration_s
     _total_s = long_hold_s + probe_release_s
 
-    for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset"):
+    for preset_name in tqdm(presets, desc=f"Scanning {plugin_stem}", unit="preset", smoothing=0.1):
         result, preset_profile, long_audio = _probe_and_classify_preset(
             adapter,
             preset_name,
