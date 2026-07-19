@@ -36,6 +36,18 @@ _NOTE_START_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Fallback for libraries that append a random per-file hash/id after the note, so the
+# note is neither at the very end of the stem nor at the start (e.g. Samples From Mars
+# "101 From Mars": `100_Loggins_SH101_E6-J8OB.wav`). Anchored to right after the last
+# underscore with a mandatory trailing `-hash`, so it only claims filenames that actually
+# have this shape. Tried before `_NOTE_RR_RE` because that regex's plain `$` anchor will
+# otherwise happily match digits inside the trailing hash itself — e.g. it reads "E2" out
+# of `..._F2-93E2.wav`, silently returning the wrong note instead of no match.
+_NOTE_HASH_SUFFIX_RE = re.compile(
+    r"_([A-G][#b]?)(-?\d+)(?:_(\d+))?-[A-Za-z0-9]+$",
+    re.IGNORECASE,
+)
+
 # Enharmonic remap: flat spellings map to their sharp equivalents so the returned
 # MIDI is correct. Bb → A#, Eb → D#, Gb → F#, Ab → G#, Db → C# (subtract one
 # semitone from the natural letter's index).
@@ -63,7 +75,7 @@ def _make_sample(note: int, rr: int, wav: Path) -> Sample:
 
 def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
     """Return (midi_note, rr_index_or_None), or None if no note found or MIDI out of range."""
-    m = _NOTE_RR_RE.search(stem) or _NOTE_START_RE.match(stem)
+    m = _NOTE_HASH_SUFFIX_RE.search(stem) or _NOTE_RR_RE.search(stem) or _NOTE_START_RE.match(stem)
     if not m:
         return None
     raw_name = m.group(1)

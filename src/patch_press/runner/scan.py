@@ -556,7 +556,36 @@ def scan_clap(
     long_hold_s = sustain_duration_s
     _total_s = long_hold_s + probe_release_s
 
+    skipped = 0
     for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
+        # Mirror the preset's folder position (relative to collection_root, e.g. the
+        # plugin's Presets root) into the config + exported XML so the on-card layout
+        # matches how the presets are organised in the plugin.
+        subfolder = ""
+        preset_path = state_map[preset_name].preset_path
+        if collection_root is not None and preset_path is not None:
+            try:
+                rel = preset_path.parent.relative_to(collection_root).as_posix()
+                subfolder = "" if rel == "." else rel
+            except ValueError:
+                subfolder = ""
+
+        # Resume support: a bank can be hundreds of presets and each is a real plugin
+        # instantiate/render/teardown cycle in this one long-lived process — u-he's CLAP
+        # host leaks a little state per cycle (visible in its own debug log as a growing
+        # "N allocations vs N-2 freed" gap on every teardown) and eventually locks up deep
+        # inside the plugin, unpredictably, well before the bank finishes. Re-running after
+        # such a hang must not re-render presets that already have a config on disk — that
+        # would silently redo 20+ minutes of work before reaching new ground every time.
+        expected = config_dir
+        for comp in subfolder.split("/"):
+            if comp:
+                expected = expected / comp
+        expected = expected / f"{_sanitize(preset_name)}.yaml"
+        if expected.exists():
+            skipped += 1
+            continue
+
         result, preset_profile, _ = _probe_and_classify_preset(
             adapter,
             preset_name,
@@ -569,18 +598,6 @@ def scan_clap(
             profile,
             tempo_bpm,
         )
-
-        # Mirror the preset's folder position (relative to collection_root, e.g. the
-        # plugin's Presets root) into the config + exported XML so the on-card layout
-        # matches how the presets are organised in the plugin.
-        subfolder = ""
-        preset_path = state_map[preset_name].preset_path
-        if collection_root is not None and preset_path is not None:
-            try:
-                rel = preset_path.parent.relative_to(collection_root).as_posix()
-                subfolder = "" if rel == "." else rel
-            except ValueError:
-                subfolder = ""
 
         path = _write_clap_config(
             preset_name,
@@ -600,6 +617,9 @@ def scan_clap(
         summary.written.append(path)
         if result.confidence != "high" or result.flags:
             summary.reviews.append((preset_name, result))
+
+    if skipped:
+        tqdm.write(f"  skipped {skipped}/{len(state_map)} already-scanned preset(s)")
 
     return summary
 
@@ -705,10 +725,19 @@ def scan_library(
     used_stems: set[str] = set()
 
     for subfolder in tqdm(subfolders, desc=f"Scanning {library_stem}", unit="folder"):
+        # --type kit assumes each subfolder holds per-INSTRUMENT subfolders (LibraryAdapter._load_kit).
+        # Some packs instead ship a style folder as flat one-shot WAVs directly (Just Add Drums
+        # "When the Levee Breaks") — LibraryAdapter.capture() takes its `if wavs:` branch over
+        # `subdirs` whenever direct WAVs are present, so mirror that priority here and fall back
+        # to flat-drumkit handling per-subfolder instead of silently emitting an unparseable config.
+        effective_type = library_type
+        if library_type == "kit" and any(subfolder.glob("*.wav")):
+            effective_type = "drumkit"
+
         if profile is not None:
             folder_profile, review_flag = profile, None
         else:
-            folder_profile, review_flag = _detect_folder_profile(subfolder, library_type)
+            folder_profile, review_flag = _detect_folder_profile(subfolder, effective_type)
         if review_flag:
             tqdm.write(f"  {subfolder.name} → {folder_profile} ({review_flag})")
         else:
@@ -719,7 +748,7 @@ def scan_library(
         capture_block = (
             "" if folder_profile == "drums" else f"\ncapture:\n  note_range: [{note_lo}, {note_hi}]\n  note_step: {note_step}\n"
         )
-        drumkit_line = "  drumkit: true\n" if library_type == "drumkit" else ""
+        drumkit_line = "  drumkit: true\n" if effective_type == "drumkit" else ""
         content = (
             f"{review_line}"
             f"source:\n"
