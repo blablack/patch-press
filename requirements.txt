@@ -50,7 +50,7 @@ packaging==26.2
     # via
     #   lazy-loader
     #   pooch
-patch-render==0.3.0
+patch-render==0.3.1
     # via patch-press (pyproject.toml)
 platformdirs==4.10.1
     # via pooch
