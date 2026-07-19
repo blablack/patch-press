@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from ..progress import ProgressBar as tqdm
+from ..progress import suppressed_plugin_output
 
 log = logging.getLogger(__name__)
 
@@ -502,8 +503,10 @@ def scan_clap(
     _validate_capture_params(note_step, sustain_duration_s, note_lo, note_hi)
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Discover plugin ID from the .clap file
-    plugins = _pr.list_clap_plugins(str(plugin_path))
+    # Discover plugin ID from the .clap file (instantiating it prints the same
+    # native banner as a render, so mute it too).
+    with suppressed_plugin_output():
+        plugins = _pr.list_clap_plugins(str(plugin_path))
     if not plugins:
         raise RuntimeError(f"No plugins found in: {plugin_path}")
     if len(plugins) > 1:
@@ -571,12 +574,16 @@ def scan_clap(
                 subfolder = ""
 
         # Resume support: a bank can be hundreds of presets and each is a real plugin
-        # instantiate/render/teardown cycle in this one long-lived process — u-he's CLAP
-        # host leaks a little state per cycle (visible in its own debug log as a growing
-        # "N allocations vs N-2 freed" gap on every teardown) and eventually locks up deep
-        # inside the plugin, unpredictably, well before the bank finishes. Re-running after
-        # such a hang must not re-render presets that already have a config on disk — that
-        # would silently redo 20+ minutes of work before reaching new ground every time.
+        # instantiate/render/teardown cycle in this one long-lived process. The scan used
+        # to lock up partway through, "unpredictably, well before the bank finishes" —
+        # root-caused (2026-07) to classify_sampleset forking a ProcessPoolExecutor per
+        # preset while Diva is resident with its ~40 native threads: the child could
+        # inherit a plugin mutex locked by a thread that doesn't exist in the fork and
+        # deadlock, leaving every thread parked in futex_wait. Fixed by running the
+        # analysis in-process at workers=1 (see analysis/pipeline._map_samples). Resume is
+        # kept regardless: any crash or kill mid-bank must not re-render presets that
+        # already have a config on disk (that would silently redo 20+ minutes of work
+        # before reaching new ground every time).
         expected = config_dir
         for comp in subfolder.split("/"):
             if comp:

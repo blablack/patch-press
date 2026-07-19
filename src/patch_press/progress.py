@@ -1,7 +1,7 @@
-"""Centralized progress bars.
+"""Centralized terminal-output hygiene: progress bars and plugin-log muting.
 
-Two behaviours, both aimed at making ``debug_script.sh`` (which tee's stdout and
-stderr into ``debug_run.log``) readable:
+The progress bar has two behaviours, both aimed at making ``debug_script.sh``
+(which tee's stdout and stderr into ``debug_run.log``) readable:
 
 * **One bar at a time.** A bar opened while another is already active disables
   itself, so a per-preset outer loop and the per-sample work running beneath it
@@ -11,8 +11,75 @@ stderr into ``debug_run.log``) readable:
   ``tee``-d stdout+stderr keeps the log messages but not the carriage-return bar
   frames. ``tqdm.write`` and log records still go to stdout, so they are
   captured by the redirect as before.
+
+``suppressed_plugin_output`` silences the page of C-level chatter that native
+plugins print on every render (see its docstring) so only the bar and our own
+status lines remain.
 """
+import os
+import sys
+from contextlib import contextmanager
+
 from tqdm import tqdm
+
+_KEEP_PLUGIN_LOG_ENV = "PATCH_PRESS_PLUGIN_LOG"
+
+
+@contextmanager
+def suppressed_plugin_output():
+    """Silence chatter that native render code writes straight to fd 1/2.
+
+    CLAP/VST plugins — u-he Diva especially — print a page of startup/teardown
+    banners on every instantiation using C-level ``printf``/``fprintf`` on the
+    process's real stdout and stderr, bypassing ``sys.stdout`` (so a Python
+    ``redirect_stdout`` can't catch them). Around a native render this points the
+    stdout/stderr *file descriptors* at ``/dev/null`` and restores them after, so
+    the terminal keeps only our progress bar and per-preset status lines.
+
+    Set ``PATCH_PRESS_PLUGIN_LOG=1`` to keep the chatter (host debugging). The
+    progress bar is drawn on ``/dev/tty`` — a different fd — so it is unaffected
+    either way. If stdout/stderr aren't real OS fds (closed, or replaced), this
+    is a no-op rather than an error: muting logs must never break a render.
+    """
+    if os.environ.get(_KEEP_PLUGIN_LOG_ENV):
+        yield
+        return
+    try:
+        saved = (os.dup(1), os.dup(2))
+    except OSError:
+        yield
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        # Flush every buffer while the fds still point at /dev/null: Python's own
+        # (in case something printed during the block) and libc's C stdio, which
+        # the plugin's ``printf`` uses and which is fully buffered when stdout is
+        # piped (``debug_script.sh``'s tee) — otherwise its tail would flush onto
+        # the terminal only after we restore fd 1.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _flush_c_stdio()
+        os.dup2(saved[0], 1)
+        os.dup2(saved[1], 2)
+        for fd in (*saved, devnull):
+            os.close(fd)
+
+
+def _flush_c_stdio():
+    """``fflush(NULL)`` — flush all C stdio output streams (best effort)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).fflush(None)
+    except Exception:
+        pass
+
 
 _bar_file = None
 _bar_file_resolved = False

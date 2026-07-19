@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from ...progress import ProgressBar as tqdm
+from ...progress import suppressed_plugin_output
 from ...config.schema import CaptureConfig
 from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
@@ -85,7 +86,8 @@ class PluginAdapterBase(Generic[_ConfigT]):
                 ],
                 **self._render_payload_extra(),
             }
-            self._invoke_render(payload, output_path)
+            with suppressed_plugin_output():
+                self._invoke_render(payload, output_path)
             return AudioBuffer.from_file(output_path)
         finally:
             os.unlink(output_path)

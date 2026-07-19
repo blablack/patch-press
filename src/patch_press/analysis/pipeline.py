@@ -252,24 +252,54 @@ def _bake_sample_loop(sample: Sample, crossfade_ms: float | None) -> Sample:
     )
 
 
+def _map_samples(fn, samples, workers: int, level: int, desc: str) -> list[Sample]:
+    """Apply ``fn`` to each sample and collect the results.
+
+    At ``workers == 1`` this runs **in-process** — no subprocess, no ``fork`` — which
+    is essential when a native plugin is resident in this process. ``scan-clap`` (and
+    ``batch``/``sample`` on a VST/CLAP source) keeps Diva loaded with ~40 background
+    threads while it calls the analysis per preset; forking a pool out of a
+    multithreaded native process can inherit a plugin mutex that was locked by a
+    parent thread absent in the child, deadlocking both sides in ``futex_wait``
+    forever. That is the intermittent "hangs partway through the bank, always around
+    the same spot" failure. In-process is also simply faster here: no process spawn
+    and no per-sample ``AudioBuffer`` pickling, and ``workers=1`` was never parallel.
+
+    At ``workers > 1`` fan the work out to a ``ProcessPoolExecutor`` as before (used
+    by callers that pass an explicit ``--workers`` and whose source isn't a live
+    plugin, e.g. library analysis).
+    """
+    if workers == 1:
+        out: list[Sample] = []
+        with tqdm(total=len(samples), desc=desc, unit="sample", leave=False) as pbar:
+            for s in samples:
+                out.append(fn(s))
+                pbar.update(1)
+        return out
+
+    out = []
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
+        futures = [executor.submit(fn, s) for s in samples]
+        with tqdm(total=len(samples), desc=desc, unit="sample", leave=False) as pbar:
+            for future in as_completed(futures):
+                out.append(future.result())
+                pbar.update(1)
+    return out
+
+
 def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
     actual_tempo = config.tempo_bpm or sset.tempo_bpm
     loop_tempo = actual_tempo if config.loop_use_tempo else None
     level = logging.getLogger().getEffectiveLevel()
-    analyzed: list[Sample] = []
 
     fn = partial(_analyze_one, config=dataclasses.replace(config, tempo_bpm=loop_tempo))
-    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
-        futures = {executor.submit(fn, s): s for s in sset.samples}
-        with tqdm(total=len(sset.samples), desc="Analyzing", unit="sample", leave=False) as pbar:
-            for future in as_completed(futures):
-                sample = future.result()
-                analyzed.append(sample)
-                if config.pitch_verify and not sample.analysis.get("pitch_ok", True):
-                    cents = sample.analysis.get("cents_diff", "?")
-                    tqdm.write(f"  WARNING note {sample.note}: pitch mismatch ({cents} cents off)")
-                pbar.set_postfix(note=sample.note, vel=sample.velocity, rr=sample.round_robin)
-                pbar.update(1)
+    analyzed = _map_samples(fn, sset.samples, workers, level, "Analyzing")
+
+    if config.pitch_verify:
+        for sample in analyzed:
+            if not sample.analysis.get("pitch_ok", True):
+                cents = sample.analysis.get("cents_diff", "?")
+                tqdm.write(f"  WARNING note {sample.note}: pitch mismatch ({cents} cents off)")
 
     sound_type = _sound_type_string(analyzed, actual_tempo)
     log.info(f"Sound type: {sound_type}")
@@ -346,14 +376,8 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
 def classify_sampleset(sset: SampleSet, tempo_bpm: float | None = None, workers: int = 1) -> str:
     """Run envelope analysis only on all samples and return the sound type string."""
     level = logging.getLogger().getEffectiveLevel()
-    analyzed: list[Sample] = []
 
     fn = partial(_envelope_only, bpm=tempo_bpm)
-    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(level,)) as executor:
-        futures = {executor.submit(fn, s): s for s in sset.samples}
-        with tqdm(total=len(sset.samples), desc="Classifying", unit="sample", leave=False) as pbar:
-            for future in as_completed(futures):
-                analyzed.append(future.result())
-                pbar.update(1)
+    analyzed = _map_samples(fn, sset.samples, workers, level, "Classifying")
 
     return _sound_type_string(analyzed, tempo_bpm)
