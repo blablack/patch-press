@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -103,14 +104,27 @@ class PluginAdapterBase(Generic[_ConfigT]):
     ) -> AudioBuffer:
         return self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm, sample_rate)
 
-    def capture(self, capture: CaptureConfig, name: str | None = None, progress=None) -> SampleSet:
+    def capture(
+        self,
+        capture: CaptureConfig,
+        name: str | None = None,
+        progress=None,
+        notes: Sequence[int] | None = None,
+    ) -> SampleSet:
+        """Render the config's note grid, or just `notes` when the caller narrows it.
+
+        `notes` exists so a run whose target format ships fewer notes than the grid
+        (a .pti synth preset is one repitched sample) doesn't render captures that
+        would only be discarded at export — see runner/pipeline.py:notes_to_capture.
+        """
         preset_name = self._config.preset or Path(str(self._config.plugin)).stem
         sset_name = name or preset_name
 
         self._apply_preset(preset_name)
 
-        note_lo, note_hi = capture.note_range
-        notes = range(note_lo, note_hi + 1, capture.note_step)
+        if notes is None:
+            note_lo, note_hi = capture.note_range
+            notes = range(note_lo, note_hi + 1, capture.note_step)
         total = len(notes) * len(capture.velocities) * capture.round_robins
         samples: list[Sample] = []
 

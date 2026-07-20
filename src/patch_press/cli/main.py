@@ -123,9 +123,15 @@ def cmd_scan_from_probe(args: argparse.Namespace) -> None:
 
 
 def cmd_scan_clap(args: argparse.Namespace) -> None:
+    # Absolute-but-not-resolved: a preset bank is often a symlink into another plugin's
+    # library (u-he ships ZebraHZ able to load Zebra2's factory bank, so
+    # .../ZebraHZ/Presets/ZebraHZ/Zebra2 -> .../Zebra2/Presets/Zebra2). resolve() would
+    # follow that out of the collection root and every preset's subfolder would then fail
+    # to compute, flattening the whole bank into the collection root (see scan_clap).
+    # abspath normalises '..' lexically without dereferencing, keeping the bank in place.
     summary = scan_clap(
         plugin_path=args.plugin.resolve(),
-        preset_dir=args.preset_dir.resolve(),
+        preset_dir=Path(os.path.abspath(args.preset_dir)),
         config_dir=args.config_dir,
         profile=args.profile,
         probe_note=args.probe_note,
@@ -137,7 +143,9 @@ def cmd_scan_clap(args: argparse.Namespace) -> None:
         debug=args.debug,
         sample_rate=args.sample_rate,
         tempo_bpm=args.tempo_bpm,
-        collection_root=args.collection_root.resolve() if args.collection_root else None,
+        collection_root=(
+            Path(os.path.abspath(args.collection_root)) if args.collection_root else None
+        ),
     )
     print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
     if summary.reviews:

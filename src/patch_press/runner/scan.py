@@ -180,20 +180,25 @@ def _write_config_yaml(out: Path, content: str, used_stems: set[str]) -> Path:
     `BANKS,T.` and `BANKS T` share a sanitised stem and would clobber each other.
     We track per-run stems and suffix `_2`, `_3`, ... instead of silently overwriting.
     Also refuses to clobber a pre-existing file on disk from an earlier scan run.
+
+    Tracked by full path, not bare stem: a name only collides with another in the *same*
+    directory. Banks repeat preset names across subfolders (`Zebra2/HS Argoblitz` and
+    `Zebra2/6 Lupins/HS Argoblitz` are different patches), and those must keep their real
+    name rather than one of them becoming `_2`.
     """
     stem = out.stem
     ext = out.suffix
     parent = out.parent
-    if stem not in used_stems and not out.exists():
-        used_stems.add(stem)
+    if str(out) not in used_stems and not out.exists():
+        used_stems.add(str(out))
         out.write_text(content)
         return out
     i = 2
     while True:
         alt_stem = f"{stem}_{i}"
         alt = parent / f"{alt_stem}{ext}"
-        if alt_stem not in used_stems and not alt.exists():
-            used_stems.add(alt_stem)
+        if str(alt) not in used_stems and not alt.exists():
+            used_stems.add(str(alt))
             alt.write_text(content)
             log.warning("%s collided with existing %s; wrote %s instead", out.name, stem, alt.name)
             return alt
@@ -535,13 +540,19 @@ def scan_clap(
         rng = random.Random(42)
         preset_files = rng.sample(preset_files, min(5, len(preset_files)))
 
+    # Key by path, not stem. Banks legitimately repeat preset names across subfolders —
+    # u-he ships a curated 'Best Of' copy of patches that also live in the numbered banks,
+    # same filename, *different* parameter values — so a stem key let the last one win and
+    # silently dropped the rest (77 of Zebra2's 628 went missing this way, with nothing in
+    # the output to say so). The key is only ever an adapter lookup handle; the display
+    # name stays the stem, and configs land in per-subfolder dirs, so nothing else changes.
     state_map: dict[str, CLAPSourceConfig] = {}
     for pf in preset_files:
-        preset_name = pf.stem
-        state_map[preset_name] = CLAPSourceConfig(
+        key = pf.relative_to(preset_dir).with_suffix("").as_posix()
+        state_map[key] = CLAPSourceConfig(
             plugin=plugin_path,
             plugin_id=plugin_id,
-            preset=preset_name,
+            preset=pf.stem,
             preset_path=pf,
         )
 
@@ -560,17 +571,35 @@ def scan_clap(
     _total_s = long_hold_s + probe_release_s
 
     skipped = 0
-    for preset_name in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
+    flattened = 0
+    for preset_key in tqdm(list(state_map), desc=f"Scanning {plugin_stem}", unit="preset"):
+        # preset_key addresses the adapter (unique, path-derived); preset_name is what the
+        # preset is called, and is what names the config and the exported preset.
+        entry = state_map[preset_key]
+        preset_name = entry.preset
         # Mirror the preset's folder position (relative to collection_root, e.g. the
         # plugin's Presets root) into the config + exported XML so the on-card layout
         # matches how the presets are organised in the plugin.
         subfolder = ""
-        preset_path = state_map[preset_name].preset_path
+        preset_path = entry.preset_path
         if collection_root is not None and preset_path is not None:
             try:
                 rel = preset_path.parent.relative_to(collection_root).as_posix()
                 subfolder = "" if rel == "." else rel
             except ValueError:
+                # Outside the collection root — usually a symlinked bank that got
+                # dereferenced upstream. Flattening here is a silent data-misfile (the
+                # configs land in the collection root, where no build group owns them),
+                # so say so. Once per scan, not once per preset: it's the same cause for
+                # the whole bank and this runs inside the progress bar.
+                if not flattened:
+                    tqdm.write(
+                        f"WARNING: {preset_path.parent} is outside collection root "
+                        f"{collection_root} — writing configs flat, with no subfolder. "
+                        "Is this bank a symlink pointing outside the preset tree?"
+                    )
+                log.warning("%s: outside collection root, no subfolder", preset_name)
+                flattened += 1
                 subfolder = ""
 
         # Resume support: a bank can be hundreds of presets and each is a real plugin
@@ -595,7 +624,7 @@ def scan_clap(
 
         result, preset_profile, _ = _probe_and_classify_preset(
             adapter,
-            preset_name,
+            preset_key,
             probe_note,
             probe_velocity,
             long_hold_s,

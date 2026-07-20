@@ -25,6 +25,25 @@ from ..io.exporters import get_exporter
 log = logging.getLogger(__name__)
 
 
+def notes_to_capture(config: RunConfig, output_format: str) -> list[int]:
+    """The part of a plugin config's note grid the target format will actually ship.
+
+    Formats differ in how much of a melodic capture they can use: the Deluge maps
+    every note to its own keyzone, a .pti has no keyzones at all and ships one
+    repitched sample. Rendering the full grid for the latter throws away all but one
+    capture, so the exporter is asked up front rather than after the renders are paid
+    for. Each exporter answers for itself (`notes_used`), and picks the same note
+    again at export time, so this can't select a note the export then ignores.
+
+    Declaring `notes_used` is optional: an exporter that doesn't gets the full grid,
+    which is never wrong, only slower.
+    """
+    lo, hi = config.capture.note_range
+    notes = list(range(lo, hi + 1, config.capture.note_step))
+    notes_used = getattr(get_exporter(output_format), "notes_used", None)
+    return list(notes_used(notes)) if notes_used is not None else notes
+
+
 def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1, progress=None) -> Path:
     if isinstance(config.source, WavetableSourceConfig):
         # A wavetable isn't a captured performance — it ships to the SD card
@@ -41,7 +60,12 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
     if isinstance(config.source, VSTSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = VSTAdapter(config.source)
-        sset = adapter.capture(config.capture, name=config.name or None, progress=progress)
+        sset = adapter.capture(
+            config.capture,
+            name=config.name or None,
+            progress=progress,
+            notes=notes_to_capture(config, output_format),
+        )
         analysis = replace(
             config.analysis,
             pitch_verify=False,
@@ -50,7 +74,12 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
     elif isinstance(config.source, CLAPSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = CLAPAdapter(config.source)
-        sset = adapter.capture(config.capture, name=config.name or None, progress=progress)
+        sset = adapter.capture(
+            config.capture,
+            name=config.name or None,
+            progress=progress,
+            notes=notes_to_capture(config, output_format),
+        )
         analysis = replace(
             config.analysis,
             pitch_verify=False,

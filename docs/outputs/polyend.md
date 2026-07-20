@@ -33,11 +33,20 @@ The `.pti` format has **no multisample keyzones** — one sample per instrument 
 
 | Preset | Mapping |
 |---|---|
-| Multisample (synth/pad/pluck) | **One sample**: the capture nearest MIDI 60 (tie-break: velocity closest to 100, lowest round-robin). Loop points are embedded (forward loop) and `tune` offsets the root back to C4 (`60 − note`, clamped ±24 with a warning). Detected attack is re-applied as the volume-envelope attack. |
+| Multisample (synth/pad/pluck) | **One sample**: the capture nearest the centre of the config's note range, nudged 2 semitones up (`_ROOT_HIGH_BIAS` — repitching down is more forgiving than up), tie-break velocity closest to 100 then lowest round-robin. Loop points are embedded (forward loop) and `tune` offsets the root back to C4 (`60 − note`, clamped ±24 with a warning). Detected attack is re-applied as the volume-envelope attack. |
 | Drumkit | **One sliced instrument**: all pads concatenated in the canonical kick → snare → hats → … order with a slice marker per pad, playback mode *Slice*. The format caps at **48 slices**; extra pads are dropped with a warning. |
 | Wavetable | Native wavetable mode: the file's 2048-frame windows ship byte-for-byte, with wavetable position, position-LFO, ADSR and low-pass cutoff translated from the scan's archetype settings. |
 
 Losses vs. the Deluge export, by design: multisamples lose their keyzone spread (the device repitches one sample chromatically), kits lose per-pad velocity layers and round-robins (one hit per pad).
+
+### Only the shipped note is rendered
+
+Because a synth preset ships exactly one capture, a **pti run of a VST/CLAP config renders only that note**, not the config's whole `note_range`/`note_step` grid — a 21-note grid would otherwise cost 21 plugin renders to throw 20 away. The exporter declares what it uses (`PolyendExporter.notes_used`) and `runner/pipeline.py:notes_to_capture` asks it before capture; the same method picks the sample at export time, so the narrowed render can't select a note the export then ignores.
+
+Two consequences worth knowing:
+
+- The configs stay format-agnostic — the same YAML still builds a full-range Deluge preset. But nothing is cached between runs, so building **both** targets from one config renders the grid twice (once narrowed, once full). Build the Deluge target first if you want both.
+- `normalize: per_set` now scales the shipped sample against **itself** rather than against the loudest note of a range that no longer ships, so a pti is typically a few dB hotter than before (measured +3.3 dB on a Diva pluck). This is the intended behaviour for a one-sample format — per-set gain exists to preserve relative level *across* the keyboard, which a single repitched sample has no use for — and it makes loudness more consistent across a pti library.
 
 Stereo sources are written stereo (planar PCM — the device infers channel count from data size); true-mono sources stay mono, halving the file. Library WAVs at other rates are resampled to 44.1 kHz (soxr HQ) with loop points rescaled; a loop too short to survive the header's 1/65535-of-file position resolution ships as one-shot with a warning.
 

@@ -24,6 +24,7 @@ import logging
 import struct
 import zlib
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -228,6 +229,21 @@ class PolyendExporter:
         sub = subfolder_parts(output.subfolder)
         return [path.joinpath(*sub, f"{safe_component(output.name)}.pti")]
 
+    @classmethod
+    def notes_used(cls, notes: Sequence[int]) -> list[int]:
+        """The one note of a melodic capture grid a .pti synth preset ships.
+
+        No keyzones (see module docstring), so every other captured note is dead
+        weight. The pipeline calls this *before* capture to render only this note
+        instead of the whole grid, which is why it has to stay the single
+        definition of the pick — `_export_synth` selects through it too, so the
+        two can't drift apart.
+        """
+        lo, hi = min(notes), max(notes)
+        centre = min(max(round((lo + hi) / 2) + _ROOT_HIGH_BIAS, lo), hi)
+        # Tie (centre exactly between two captures) resolves to the lower note.
+        return [min(notes, key=lambda n: (abs(n - centre), n))]
+
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         if not sset.samples:
             raise ValueError(f"{config.name}: sample set is empty")
@@ -246,14 +262,15 @@ class PolyendExporter:
 
     # ------------------------------------------------------------------
     def _export_synth(self, sset: SampleSet, name: str) -> tuple[bytes, bytes]:
-        # One sample per preset: nearest the (high-biased) centre of the captured note
-        # range, then velocity closest to 100, then lowest round robin. Centring on the
-        # actual range rather than a hardcoded MIDI 60 minimises the chromatic-repitch
-        # distance the device has to cover; see _ROOT_HIGH_BIAS.
-        notes = [x.note for x in sset.samples]
-        centre = round((min(notes) + max(notes)) / 2) + _ROOT_HIGH_BIAS
-        centre = min(max(centre, min(notes)), max(notes))
-        s = min(sset.samples, key=lambda x: (abs(x.note - centre), abs(x.velocity - 100), x.round_robin))
+        # One sample per preset: the root note notes_used() picks, then velocity closest
+        # to 100, then lowest round robin. Going through notes_used() rather than
+        # recomputing the centre here is what lets the pipeline pre-narrow the capture
+        # to that one note and still get this exact sample.
+        root = self.notes_used([x.note for x in sset.samples])[0]
+        s = min(
+            (x for x in sset.samples if x.note == root),
+            key=lambda x: (abs(x.velocity - 100), x.round_robin),
+        )
 
         data = _resample_to_target(s.audio.data, s.audio.sample_rate)
         pcm, num_frames = _pcm_bytes(data)

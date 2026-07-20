@@ -14,23 +14,23 @@ from ..config.schema import (
 from ..io.adapters.bitwig import BitwigAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.exporters import get_exporter
-from .pipeline import run
+from .pipeline import notes_to_capture, run
 
 log = logging.getLogger(__name__)
 
 
-def _expected_notes(config: RunConfig) -> int:
+def _expected_notes(config: RunConfig, output_format: str) -> int:
     """Exact count of samples a config will capture, for the shared progress total.
 
-    VST/CLAP: the rendered note grid (the slow phase the bar tracks). Library: mirrors
-    the adapter's note-thinning + round-robin-capping so the total matches what
+    VST/CLAP: the rendered note grid (the slow phase the bar tracks), narrowed the same
+    way `run()` narrows it — a format that ships one note only renders one. Library:
+    mirrors the adapter's note-thinning + round-robin-capping so the total matches what
     `capture()` actually produces.
     """
     cap = config.capture
     src = config.source
     if isinstance(src, (VSTSourceConfig, CLAPSourceConfig)):
-        lo, hi = cap.note_range
-        return len(range(lo, hi + 1, cap.note_step)) * len(cap.velocities) * cap.round_robins
+        return len(notes_to_capture(config, output_format)) * len(cap.velocities) * cap.round_robins
     if isinstance(src, LibrarySourceConfig):
         try:
             return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)
@@ -72,7 +72,7 @@ def run_batch(
             plan.append((cfg_path, config, "skip"))
             continue
         plan.append((cfg_path, config, None))
-        total_notes += _expected_notes(config)
+        total_notes += _expected_notes(config, output_format)
 
     with tqdm(total=total_notes, desc=f"Batch {output_path.name}", unit="note") as bar:
         for cfg_path, config, state in plan:

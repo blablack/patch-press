@@ -1,6 +1,7 @@
 import shutil
 import wave
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 import soundfile as sf
@@ -112,6 +113,11 @@ class DelugeExporter:
             path.parent.joinpath(folder, path.name, *sub, f"{safe}.xml")
             for folder in ("SYNTHS", "KITS")
         ]
+
+    @classmethod
+    def notes_used(cls, notes: Sequence[int]) -> list[int]:
+        """Every captured note becomes its own keyzone, so the whole grid is used."""
+        return list(notes)
 
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         safe_name = safe_component(config.name)
