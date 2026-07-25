@@ -167,6 +167,17 @@ def _is_non_loopable(samples, tempo_bpm: float | None) -> tuple[bool, float | No
     return median > _LOOP_TIMBRE_SEAM_MAX, median
 
 
+def _yaml_path(p: Path | str) -> str:
+    """Quote a filesystem path for a YAML scalar.
+
+    Unquoted is not safe for real-world library folders: YAML strips trailing
+    whitespace from a plain scalar, so `Acid From Mars/Big Res ` (a real vendor
+    folder name, trailing space and all) loads back as a path that doesn't exist.
+    A path containing `:` or `#` breaks the parse outright.
+    """
+    return '"' + str(p).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _sanitize(name: str) -> str:
     s = re.sub(r"[^\w]", "_", name)
     s = re.sub(r"_+", "_", s)
@@ -462,7 +473,7 @@ def _write_clap_config(
         f"  plugin: {plugin_path}\n"
         f"  plugin_id: {plugin_id}\n"
         f'  preset: "{preset_name}"\n'
-        f"  preset_path: {preset_path}\n"
+        f"  preset_path: {_yaml_path(preset_path)}\n"
     )
     content = _config_yaml(
         preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate, subfolder=subfolder
@@ -789,7 +800,7 @@ def scan_library(
             f"{review_line}"
             f"source:\n"
             f"  type: library\n"
-            f"  path: {subfolder}\n"
+            f"  path: {_yaml_path(subfolder)}\n"
             f"{drumkit_line}"
             f"\n"
             f"profile: {folder_profile}\n"
@@ -916,7 +927,7 @@ def scan_oneshots(
             f"{review_line}"
             f"source:\n"
             f"  type: library\n"
-            f"  path: {wav}\n"
+            f"  path: {_yaml_path(wav)}\n"
             f"  note: {note}\n"
             f"\n"
             f"profile: {preset_profile}\n"
@@ -1013,7 +1024,7 @@ def scan_bitwig(
             f"# {n} samples, {len(roots)} notes [{roots[0]}-{roots[-1]}], {looped} looped\n"
             f"source:\n"
             f"  type: bitwig\n"
-            f"  path: {archive}\n"
+            f"  path: {_yaml_path(archive)}\n"
             f"\n"
             f"profile: {preset_profile}\n"
             f"\n"
@@ -1079,7 +1090,7 @@ def scan_wavetables(
             f"{review_line}"
             f"source:\n"
             f"  type: wavetable\n"
-            f"  path: {wav}\n"
+            f"  path: {_yaml_path(wav)}\n"
             f"\n"
             f"wavetable:\n"
             f"  archetype: {result.archetype}\n"
@@ -1154,7 +1165,7 @@ def scan_kit_assemble(
             f"{review_line}"
             f"source:\n"
             f"  type: library\n"
-            f"  path: {hits_root}\n"
+            f"  path: {_yaml_path(hits_root)}\n"
             f"  drumkit: true\n"
             f"  files:\n"
             f"{files_block}"

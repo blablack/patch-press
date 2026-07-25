@@ -35,7 +35,7 @@ The `.pti` format has **no multisample keyzones** — one sample per instrument 
 |---|---|
 | Multisample (synth/pad/pluck) | **One sample**: the capture nearest the centre of the config's note range, nudged 2 semitones up (`_ROOT_HIGH_BIAS` — repitching down is more forgiving than up), tie-break velocity closest to 100 then lowest round-robin. Loop points are embedded (forward loop) and `tune` offsets the root back to C4 (`60 − note`, clamped ±24 with a warning). Detected attack is re-applied as the volume-envelope attack. |
 | Drumkit | **One sliced instrument**: all pads concatenated in the canonical kick → snare → hats → … order with a slice marker per pad, playback mode *Slice*. The format caps at **48 slices**; extra pads are dropped with a warning. |
-| Wavetable | Native wavetable mode: the file's 2048-frame windows ship byte-for-byte, with wavetable position, position-LFO, ADSR and low-pass cutoff translated from the scan's archetype settings. |
+| Wavetable | Native wavetable mode: the file's whole 2048-frame windows ship byte-for-byte, with wavetable position, position-LFO, ADSR and low-pass cutoff translated from the scan's archetype settings. A trailing partial window is dropped (the device floors to whole windows too — a device-saved factory wavetable, `Touchy.pti`, carries 524266 frames with a window count of 255). A **stereo** wavetable keeps both channels on Tracker+/Mini: the length field counts frames per channel, so the window count is unaffected and the PCM is planar like any stereo instrument. |
 
 Losses vs. the Deluge export, by design: multisamples lose their keyzone spread (the device repitches one sample chromatically), kits lose per-pad velocity layers and round-robins (one hit per pad).
 
@@ -77,4 +77,5 @@ Each of these is a one-constant fix in `src/patch_press/io/exporters/polyend.py`
 - [ ] A stereo preset plays in stereo on Tracker+/Mini (planar layout inference).
 - [ ] A kit's slices trigger the right drums in order.
 - [ ] A wavetable preset scans smoothly and the initial position sounds like the Deluge export (window index vs. fraction assumption at header offset 88).
+- [ ] A **stereo** wavetable preset plays in stereo and scans the same windows as its mono siblings. The planar layout is confirmed against a real device-saved stereo `.pti`, but no device-saved *stereo wavetable* was available to check against — if it comes out wrong, the fallback is a one-line downmix in `_export_wavetable`. Quickest A/B: load `Samples/Stereo Wavetables/Stereo Wavetable 1.wav` on the device and compare it against the exported `Stereo Wavetable 1.pti`.
 - [ ] The wavetable position LFO speed feels comparable to the Deluge LFO2 (steps-enum mapping).

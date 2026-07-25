@@ -27,6 +27,71 @@ def _deluge_path(path: Path) -> str:
     return str(Path(*parts[idx:])) if idx is not None else str(path)
 
 
+_WT_WINDOW = 2048
+
+
+def _copy_wavetable_wav(src: Path, dest: Path) -> None:
+    """Put a wavetable file on the card — byte-for-byte whenever that's possible.
+
+    Copying raw bytes is the default: the file is unmodified by design (see
+    WavetableAdapter), and re-encoding through soundfile risks dropping the Serum
+    `clm` metadata chunk the firmware reads to recognise a wavetable.
+
+    A STEREO source is the one case that can't be copied. The Deluge's wavetable
+    oscillator is mono-only — the firmware refuses to load a stereo file as a
+    wavetable at all — so it is downmixed, truncated to whole 2048-sample windows,
+    and rewritten with any `clm` chunk carried across. (The Polyend Tracker Mini
+    does play stereo wavetables, so the .pti export of the same config keeps both
+    channels; this narrowing is Deluge-only.)
+    """
+    info = sf.info(str(src))
+    if info.channels == 1:
+        shutil.copy2(src, dest)
+        return
+
+    data, sr = sf.read(str(src), dtype="float64", always_2d=True)
+    mono = data.mean(axis=1)
+    usable = (len(mono) // _WT_WINDOW) * _WT_WINDOW
+    if usable:
+        mono = mono[:usable]
+    sf.write(str(dest), mono, sr, subtype=info.subtype)
+    clm = _read_chunk(src, b"clm ")
+    if clm is not None:
+        _insert_chunk(dest, b"clm ", clm)
+
+
+def _iter_chunks(raw: bytes):
+    """Yield (id, offset-of-chunk-header, payload-size) for each RIFF chunk."""
+    off = 12
+    while off + 8 <= len(raw):
+        cid = raw[off:off + 4]
+        size = int.from_bytes(raw[off + 4:off + 8], "little")
+        yield cid, off, size
+        off += 8 + size + (size % 2)
+
+
+def _read_chunk(path: Path, chunk_id: bytes) -> bytes | None:
+    raw = path.read_bytes()
+    for cid, off, size in _iter_chunks(raw):
+        if cid == chunk_id:
+            return raw[off + 8:off + 8 + size]
+    return None
+
+
+def _insert_chunk(path: Path, chunk_id: bytes, payload: bytes) -> None:
+    """Splice a chunk in ahead of `data`, fixing up the RIFF size field."""
+    raw = bytearray(path.read_bytes())
+    at = next((off for cid, off, _ in _iter_chunks(bytes(raw)) if cid == b"data"), None)
+    if at is None:
+        return
+    chunk = chunk_id + len(payload).to_bytes(4, "little") + payload
+    if len(payload) % 2:
+        chunk += b"\0"
+    raw[at:at] = chunk
+    raw[4:8] = (int.from_bytes(raw[4:8], "little") + len(chunk)).to_bytes(4, "little")
+    path.write_bytes(bytes(raw))
+
+
 def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int], Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[int, int, int], Path] = {}
@@ -54,10 +119,7 @@ def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int],
             used_names.add(fname)
         p = output_dir / fname
         if sset.category == Category.WAVETABLE:
-            # Copy the raw bytes rather than decode/re-encode: the file is unmodified
-            # by design (see WavetableAdapter), and re-encoding through soundfile risks
-            # dropping the Serum `clm` metadata chunk the firmware may read.
-            shutil.copy2(s.metadata["source_file"], p)
+            _copy_wavetable_wav(Path(s.metadata["source_file"]), p)
         else:
             sf.write(str(p), s.audio.data.T, s.audio.sample_rate)
         paths[(s.note, s.velocity, s.round_robin)] = p

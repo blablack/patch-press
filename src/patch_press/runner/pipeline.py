@@ -25,6 +25,15 @@ from ..io.exporters import get_exporter
 log = logging.getLogger(__name__)
 
 
+def _source_location(source) -> str:
+    """Best human pointer at where a source's audio was supposed to come from."""
+    for attr in ("path", "preset", "preset_path"):
+        value = getattr(source, attr, None)
+        if value:
+            return str(value)
+    return type(source).__name__
+
+
 def notes_to_capture(config: RunConfig, output_format: str) -> list[int]:
     """The part of a plugin config's note grid the target format will actually ship.
 
@@ -100,6 +109,18 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         analysis = config.analysis
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")
+
+    if not sset.samples:
+        # Every downstream stage assumes at least one sample; without this the
+        # first thing to divide by len(samples) is what surfaces, which says
+        # nothing about the actual cause (a library folder whose filenames carry
+        # no parseable note, a source path that no longer exists, an empty dir).
+        raise ValueError(
+            f"{config.output.name}: source produced no samples "
+            f"({_source_location(config.source)}) — nothing to analyse. For a library "
+            f"folder this usually means no filename carries a note+octave, so it is a "
+            f"bag of loops/one-shots rather than a multisample."
+        )
 
     log.debug("Analyze Sampleset")
     sset = analyze_sampleset(sset, analysis, workers=workers)

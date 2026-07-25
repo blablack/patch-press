@@ -49,14 +49,21 @@ class WavetableAnalysis:
 
 
 def _frame_features(audio: AudioBuffer, frame_size: int = FRAME_SIZE) -> dict | None:
-    """Per-2048-sample-frame spectral features, or None if not on the WT frame grid."""
+    """Per-2048-sample-frame spectral features, or None if shorter than one frame.
+
+    A trailing partial frame is analysed out rather than rejected. Polyend's own
+    stock wavetables ship a few samples shy of a whole window and the Tracker
+    floors to whole windows when loading them, so a non-multiple length means a
+    partial tail — not a file that missed the frame grid.
+    """
     mono = audio.to_mono().astype(np.float64)
     n = len(mono)
-    if n < frame_size or n % frame_size != 0:
+    if n < frame_size:
         return None
 
     n_frames = n // frame_size
-    frames = mono.reshape(n_frames, frame_size)
+    remainder = n - n_frames * frame_size
+    frames = mono[:n_frames * frame_size].reshape(n_frames, frame_size)
     window = np.hanning(frame_size)
 
     centroids: list[float] = []
@@ -92,6 +99,7 @@ def _frame_features(audio: AudioBuffer, frame_size: int = FRAME_SIZE) -> dict | 
         "flatnesses": flatnesses,
         "odd_even_ratios": odd_even_ratios,
         "n_frames": n_frames,
+        "remainder": remainder,
     }
 
 
@@ -119,9 +127,14 @@ def classify_archetype(audio: AudioBuffer) -> WavetableAnalysis:
     if feats is None:
         return _template_result(
             "pad", wt_position=0.0, lfo2_rate=0.3, lfo2_depth=0.3, filter_cutoff=0.5,
-            flags=["audio length is not a multiple of 2048 samples — not a valid wavetable "
-                   "frame grid, defaulted to pad, verify manually"],
+            flags=[f"audio is shorter than one {FRAME_SIZE}-sample wavetable frame — "
+                   "defaulted to pad, verify manually"],
         )
+
+    flags: list[str] = []
+    if feats["remainder"]:
+        flags.append(f"{feats['remainder']} trailing samples ignored — file is not a whole "
+                     f"number of {FRAME_SIZE}-sample windows")
 
     centroids = feats["centroids"]
     n_frames = feats["n_frames"]
@@ -184,4 +197,4 @@ def classify_archetype(audio: AudioBuffer) -> WavetableAnalysis:
     brightness_nudge = (bright - 0.08) * 0.5
     filter_cutoff = max(0.05, min(0.95, 0.7 + cutoff_bias + brightness_nudge))
 
-    return _template_result(archetype, wt_position, lfo2_rate, lfo2_depth, filter_cutoff, flags=[])
+    return _template_result(archetype, wt_position, lfo2_rate, lfo2_depth, filter_cutoff, flags=flags)

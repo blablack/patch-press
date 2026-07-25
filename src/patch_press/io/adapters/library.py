@@ -13,16 +13,23 @@ from ..smpl import read_loop_points
 
 log = logging.getLogger(__name__)
 
-# Matches note+octave at end of stem, with optional _NNNN round-robin suffix.
-# Examples: A0, A#-1, Bb2, C3_0001, F#2_0003
+# Matches note+octave at end of stem, with optional round-robin suffix.
+# Examples: A0, A#-1, Bb2, C3_0001, F#2_0003, "Solid Bass DX100 C1 01"
 #
 # The `(?:^|(?<=[^A-Za-z]))` prefix requires the note letter to sit at start-of-stem
 # or immediately after a non-letter (`_`, ` `, `.`, `-`). Without it, `re.search`
 # will greedily right-anchor on any trailing digits, so `Piano_Db3` matches the
 # lowercase `b3` and reports B3 instead of Db3 — off by up to a major third for
 # every flat-named note in libraries that use flat spellings.
+#
+# The round-robin separator is `_` OR a space: Samples From Mars' "Essential WAV"
+# packs write `<Preset> <Machine> <Note><Octave> <NN>` (`Accordion Wasp C1 01`),
+# which left the note un-parsed at the end of the stem. Still fully end-anchored,
+# so a machine name that looks like a note only matches when it really is the last
+# token before the index (`Loop SVC350 01 120` stays unmatched: `C350` is out of
+# MIDI range and `01 120` has no note letter).
 _NOTE_RR_RE = re.compile(
-    r"(?:^|(?<=[^A-Za-z]))([A-G][#b]?)(-?\d+)(?:_(\d+))?$",
+    r"(?:^|(?<=[^A-Za-z]))([A-G][#b]?)(-?\d+)(?:[_ ](\d+))?$",
     re.IGNORECASE,
 )
 

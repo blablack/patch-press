@@ -17,11 +17,22 @@ patch-press scan-wavetables "~/wavetables/ESW Core Tables" configs/ESWCore
 
 ## Format requirements
 
-- **WAV file**, mono, 16-bit or 32-bit float.
-- **Total sample count must be an exact multiple of 2048.** Each 2048-sample block is one frame in the wavetable.
+- **WAV file**, mono or stereo, 16-bit or 32-bit float.
+- **At least 2048 samples.** Each 2048-sample block is one frame in the wavetable.
 - If Serum's `clm` chunk is present, patch-press preserves it byte-for-byte in the output. This is how the Deluge distinguishes wavetables from raw samples.
 
-If the length isn't a clean 2048-multiple, the config gets flagged REVIEW and defaults to the `pad` archetype.
+A length that isn't an exact 2048-multiple is fine: the trailing partial window is ignored, matching how the Tracker itself floors to whole windows. Polyend's own stock wavetables need this — they ship a few samples shy of 256 windows (e.g. 524267 = 255 windows + 2027 samples). The file is still analysed normally on its whole windows and the config is flagged REVIEW noting how many samples were dropped. Only a file shorter than a single 2048-sample window is rejected.
+
+### Stereo wavetables
+
+Stereo is accepted, and what happens to it depends on the target — the two devices genuinely differ:
+
+- **Polyend Tracker Mini / Tracker+**: both channels ship. The `.pti` length field counts frames *per channel*, so the window count is unchanged and the PCM is planar (all left, then all right) exactly like a stereo sample instrument.
+- **Deluge**: downmixed to mono, because its wavetable oscillator is mono-only — the firmware won't force-load a stereo file as a wavetable at all. The copy is no longer bit-for-bit for these files: it's re-encoded at the source's own bit depth, truncated to whole windows, with any `clm` chunk carried across.
+
+Downmixing is a real loss for material designed as stereo — Polyend's own stereo bank has tables whose channels correlate as low as −0.32, where mono summing cancels content rather than just narrowing it. So it's done only where the device leaves no choice.
+
+The archetype analysis always runs on the mono sum, on both targets.
 
 ## Archetype detection
 

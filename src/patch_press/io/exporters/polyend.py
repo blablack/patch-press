@@ -17,7 +17,8 @@ checked against Polyend's official tracker-lib (github.com/polyend/tracker-lib):
   — plain "Slice" mode 4 instead plays one selected slice repitched across the
   keyboard, which is wrong for a kit), which is the idiomatic Tracker kit.
   Serum wavetables map onto the native wavetable playback mode (2048-frame
-  windows) unmodified.
+  windows) unmodified, stereo ones included — the length field counts frames per
+  channel, so the window count is independent of the channel count.
 """
 
 import logging
@@ -352,12 +353,22 @@ class PolyendExporter:
         wt = sset.source_metadata["wavetable"]
 
         # Wavetables are never resampled: the 2048-frame window grid is the
-        # content, the nominal rate is irrelevant. Scan validated the length,
-        # but hand-written configs can reach here too.
+        # content, the nominal rate is irrelevant.
+        #
+        # A trailing partial window is dropped rather than rejected — the device
+        # itself floors to whole windows, and Polyend's own stock wavetables ship
+        # a few samples shy of one (Touchy.pti, a device-saved factory wavetable
+        # instrument, has 524266 frames with a window count of 255 = 522240).
+        # Only a file too short for even one window is unusable.
         num_frames = s.audio.num_frames
-        if num_frames == 0 or num_frames % _WT_WINDOW != 0:
-            raise ValueError(f"{name}: wavetable length {num_frames} is not a multiple of {_WT_WINDOW}")
         positions = num_frames // _WT_WINDOW
+        if positions == 0:
+            raise ValueError(
+                f"{name}: wavetable length {num_frames} is shorter than one {_WT_WINDOW}-sample window")
+        usable = positions * _WT_WINDOW
+        if usable != num_frames:
+            log.warning(f"{name}: dropping {num_frames - usable} trailing samples "
+                        f"(partial wavetable window), keeping {positions} windows")
 
         wt_lfo = None
         if wt.lfo2_depth > 0:
@@ -365,9 +376,18 @@ class PolyendExporter:
             # steps indexes the Tracker's slow->fast LFO subdivision enum.
             wt_lfo = (round(wt.lfo2_rate * _LFO_MAX_STEPS), wt.lfo2_depth)
 
+        # Stereo wavetables are kept stereo (Tracker Mini / Tracker+ only): the
+        # header's length field counts frames PER CHANNEL, so the window count is
+        # unaffected by the channel count, and the PCM is planar exactly like a
+        # stereo sample instrument. Polyend's own "Stereo Wavetables" bank has
+        # channels as low as -0.32 correlated, so downmixing would not merely
+        # narrow them — it would cancel content out. True-mono input still ships
+        # as one channel (_pcm_bytes collapses it).
+        pcm, _ = _pcm_bytes(s.audio.data[:, :usable])
+
         header = _build_header(
             name,
-            num_frames,
+            usable,
             playback_mode=_MODE_WAVETABLE,
             wavetable_positions=positions,
             # Assumed to be a window index (not a 0..65535 fraction) — flagged
@@ -385,5 +405,4 @@ class PolyendExporter:
             cutoff=wt.filter_cutoff,
             filter_type=(0, 1) if wt.filter_cutoff < 0.999 else (0, 0),  # LP, enabled
         )
-        pcm = _to_int16(s.audio.data[0]).tobytes()  # Serum tables are mono
         return header, pcm
