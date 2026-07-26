@@ -298,17 +298,18 @@ class PolyendExporter:
         if tune != 60 - s.note:
             log.warning(f"{name}: root note {s.note} beyond tune range, clamped to {tune:+d} semitones")
 
-        # The capture already contains its own attack; re-applying attack_s as a
-        # volume-envelope ramp softens onsets slightly, but keeps note-off
-        # behaviour consistent with the source. First pass — tune by ear.
-        attack_ms = min(round(float(s.analysis.get("attack_s", 0.0)) * 1000), 10000)
+        # No attack: the capture already contains the source patch's own attack
+        # (an 8 s Zebra swell is 8 s of recorded audio), so re-applying attack_s
+        # as a volume-envelope ramp stacks the same swell twice. Envelope stays
+        # flat — attack 0, decay 0, full sustain — and only release shapes
+        # note-off.
         header = _build_header(
             name,
             num_frames,
             playback_mode=mode,
             loop=loop,
             tune=tune,
-            volume_env=(attack_ms, 0, 1.0, 1000),
+            volume_env=(0, 0, 1.0, 1000),
         )
         return header, pcm
 

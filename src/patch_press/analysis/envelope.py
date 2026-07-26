@@ -68,6 +68,10 @@ def _to_db(v: float) -> float:
 class EnvelopeResult:
     peak_db: float
     rms_db: float
+    # NOT a musical attack time — it is attack_end/sr, i.e. where the loopable region STARTS.
+    # On a decay-to-plateau ADSR or a late-peak swell that offset is seconds in (a Zebra swell
+    # reads 8 s, a Sample From Mars key 1.5 s) even when the onset itself is instant. It exists
+    # to bound the loop search; never feed it to an exporter's envelope attack parameter.
     attack_s: float
     attack_end: int  # sample index where attack settles
     sustain_start: int  # sample index, steady-state begins
