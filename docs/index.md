@@ -10,7 +10,7 @@ nav_order: 1
 
 patch-press turns things you already have — a VST folder, a downloaded sample library, a bank of Serum wavetables — into ready-to-play presets for hardware samplers. It handles the tedious parts: playing every note, trimming silence, finding a clean loop point, laying WAVs out in the right folder structure, writing the preset files each target expects.
 
-Two exporters ship today: the [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV) and the [Polyend Tracker](https://polyend.com/tracker/) family (self-contained `.pti`). The pipeline is format-agnostic and designed to grow additional targets over time.
+Three exporters ship today: the [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV), the [Polyend Tracker](https://polyend.com/tracker/) family (self-contained `.pti`) and the [1010music Bento](https://1010music.com/) (a `patch.xml` folder per preset). The pipeline is format-agnostic and designed to grow additional targets over time.
 
 The pipeline is one command per source. No YAML written by hand in the happy path.
 
@@ -55,7 +55,7 @@ patch-press scan-library "~/samples/Mini From Mars" configs/Mini --type multisam
 
 # 3. Run the pipeline → export to your target device's format
 patch-press batch "configs/Mini/*.yaml" --path /media/DELUGE --format deluge
-# ...or --path staging/Polyend --format pti for a Polyend Tracker instead
+# ...or --path staging/Polyend --format pti (Tracker) / staging/Bento --format bento
 ```
 
 The scan commands write configs so you never have to. Editing a YAML is the escape hatch when an auto-detection got something wrong — one line change, re-run `sample`, done.

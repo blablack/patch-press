@@ -16,7 +16,7 @@ patch-press runs on **Linux** and **macOS**. Both are POSIX enough that `pathlib
 
 If you're only working with sample libraries or wavetables — no VST/CLAP scanning — patch-render is still pulled in but you'll never invoke it.
 
-**A target output location.** patch-press writes into whatever directory you point `--path` at, in the layout your `--format` expects. For the Deluge target (`--format deluge`), that's a directory with `SYNTHS/`, `KITS/`, and `SAMPLES/` subfolders — either the Deluge SD card mounted directly, or a staging directory you `rsync` to the card later. For the Polyend Tracker target (`--format pti`), it's a flat directory of self-contained `.pti` files. See [Outputs](outputs/) for what each target writes.
+**A target output location.** patch-press writes into whatever directory you point `--path` at, in the layout your `--format` expects. For the Deluge target (`--format deluge`), that's a directory with `SYNTHS/`, `KITS/`, and `SAMPLES/` subfolders — either the Deluge SD card mounted directly, or a staging directory you `rsync` to the card later. For the Polyend Tracker target (`--format pti`), it's a flat directory of self-contained `.pti` files. For the 1010music Bento target (`--format bento`), it's a card root holding a `UserPatches/` tree of one folder per patch. See [Outputs](outputs/) for what each target writes.
 
 ## Install patch-press
 

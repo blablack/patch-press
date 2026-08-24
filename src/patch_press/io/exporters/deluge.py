@@ -1,5 +1,4 @@
 import shutil
-import wave
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,15 +8,10 @@ from lxml import etree
 
 from ...config.schema import OutputConfig
 from ...model.sample import Category, Sample, SampleSet
-from ._common import safe_component, subfolder_parts
+from ._common import safe_component, sample_wav_name, subfolder_parts, wav_frame_count
 
 _FIRMWARE = "4.1.3"
 _MIN_FIRMWARE = "4.1.0-alpha"
-
-
-def _nframes(path: Path) -> int:
-    with wave.open(str(path), "rb") as f:
-        return f.getnframes()
 
 
 def _deluge_path(path: Path) -> str:
@@ -96,28 +90,8 @@ def _write_wavs(sset: SampleSet, output_dir: Path) -> dict[tuple[int, int, int],
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[int, int, int], Path] = {}
     used_names: set[str] = set()
-    bpm = int(round(sset.tempo_bpm))
     for s in sset.samples:
-        if "source_file" in s.metadata:
-            src = Path(s.metadata["source_file"])
-            fname = src.name
-            # Two samples whose source WAVs share a basename (e.g. `01.wav` in two
-            # per-instrument subdirs of a kit, or same-named picks across category
-            # folders in assemble-kits) would overwrite each other and both point
-            # at whichever WAV was written last. Prefix with the source parent
-            # dir on collision so both WAVs survive on disk and the paths dict
-            # keeps them distinct.
-            if fname in used_names:
-                fname = f"{src.parent.name}_{src.name}"
-                i = 2
-                while fname in used_names:
-                    fname = f"{src.parent.name}_{i}_{src.name}"
-                    i += 1
-            used_names.add(fname)
-        else:
-            fname = f"note{s.note:03d}_T{bpm:03d}_V{s.velocity:03d}_RR{s.round_robin}.wav"
-            used_names.add(fname)
-        p = output_dir / fname
+        p = output_dir / sample_wav_name(s, sset.tempo_bpm, used_names)
         if sset.category == Category.WAVETABLE:
             _copy_wavetable_wav(Path(s.metadata["source_file"]), p)
         else:
@@ -139,7 +113,7 @@ def _q31(frac: float) -> str:
 
 
 def _zone_el(parent, path: Path, sample: Sample) -> None:
-    kw = {"startSamplePos": "0", "endSamplePos": str(_nframes(path))}
+    kw = {"startSamplePos": "0", "endSamplePos": str(wav_frame_count(path))}
     if sample.loop_points:
         kw["startLoopPos"] = str(sample.loop_points[0])
         kw["endLoopPos"] = str(sample.loop_points[1])

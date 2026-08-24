@@ -299,7 +299,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format: deluge | pti",
+        help="Output format: deluge | pti | bento",
     )
     sample_p.add_argument(
         "--workers",
@@ -325,7 +325,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format: deluge | pti",
+        help="Output format: deluge | pti | bento",
     )
     batch_p.add_argument(
         "--workers",

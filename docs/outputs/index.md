@@ -20,5 +20,8 @@ The one place the target leaks upstream is *how many notes get captured*. Format
 |---|---|---|
 | `deluge` | [Synthstrom Deluge](https://synthstrom.com/product/deluge/) — XML preset + WAVs in the SD-card layout | [Deluge output](deluge.html) |
 | `pti` | [Polyend Tracker](https://polyend.com/tracker/) family — self-contained `.pti` instruments | [Polyend Tracker output](polyend.html) |
+| `bento` | [1010music Bento](https://1010music.com/) — one patch folder per preset (`patch.xml` + WAVs) | [Bento output](bento.html) |
 
 Deluge is what shipped first because it's the device patch-press was built for. The pipeline architecture is set up to add more targets over time — anything with a defined preset format is a candidate.
+
+Not every target can play everything the pipeline produces. Where a device simply has no engine for a category, the exporter says so and raises rather than shipping a preset that looks right and sounds wrong — the Bento can't play user wavetables, for instance, so those configs are built with `deluge` or `pti` instead.
