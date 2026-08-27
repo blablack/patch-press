@@ -48,6 +48,31 @@ def _expected_notes(config: RunConfig, output_format: str) -> int:
     return 0
 
 
+def _warn_on_output_collisions(plan, exporter_cls, output_path: Path) -> None:
+    """Report configs in this batch that would write to the same place.
+
+    Only a batch sees the whole set, so this is the one spot that can catch it. It
+    matters most for the Bento, whose patches all live in one flat directory and get
+    a shortened folder name: two source folders that shorten the same way would have
+    the second preset overwrite the first, or — with skip-existing on — be silently
+    skipped as "already built". Reported rather than raised, since the run still
+    produces a valid card for every preset that isn't part of a clash.
+    """
+    claimed: dict[Path, list[Path]] = {}
+    for cfg_path, config, state in plan:
+        if config is None:
+            continue
+        for out in exporter_cls.expected_outputs(config.output, output_path):
+            claimed.setdefault(out, []).append(cfg_path)
+    for out, sources in claimed.items():
+        if len(sources) > 1:
+            log.warning(
+                "%s: %d configs map to the same output — %s. Only one will survive; "
+                "rename one preset or its source folder.",
+                out.parent.name, len(sources), ", ".join(p.stem for p in sources),
+            )
+
+
 def run_batch(
     config_paths: list[Path],
     output_path: Path,
@@ -73,6 +98,8 @@ def run_batch(
             continue
         plan.append((cfg_path, config, None))
         total_notes += _expected_notes(config, output_format)
+
+    _warn_on_output_collisions(plan, exporter_cls, output_path)
 
     with tqdm(total=total_notes, desc=f"Batch {output_path.name}", unit="note") as bar:
         for cfg_path, config, state in plan:

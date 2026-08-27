@@ -123,9 +123,17 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         )
 
     log.debug("Analyze Sampleset")
-    sset = analyze_sampleset(sset, analysis, workers=workers)
+    exporter_cls = get_exporter(output_format)
+    # An exporter whose device crossfades the loop seam itself declares it, and the
+    # analysis leaves the audio alone rather than fading the same seam twice. The
+    # length is still worked out and recorded, so the exporter can hand the device a
+    # number. Same shape as `notes_used` — optional, absent means "bake it".
+    bakes = getattr(exporter_cls, "bakes_loop_crossfade", None)
+    sset = analyze_sampleset(
+        sset, analysis, workers=workers, bake_crossfade=True if bakes is None else bakes()
+    )
 
-    return get_exporter(output_format)().export(sset, config.output, output_path)
+    return exporter_cls().export(sset, config.output, output_path)
 
 
 def classify(config: RunConfig, workers: int = 1, save_path: Path | None = None) -> str:

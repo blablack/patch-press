@@ -51,6 +51,7 @@ from ...analysis.drumkit import classify_instrument
 from ...config.schema import OutputConfig
 from ...model.sample import Category, Sample, SampleSet
 from ._common import safe_component, sample_wav_name, subfolder_parts, wav_frame_count
+from .bento_index import derive_tags, update_index
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +64,21 @@ _TYPE_KIT = "OneShots"
 # Every factory kit has exactly 16 pads (416 saminst cells across 26 kits), addressed
 # by `celldisppos` 0-15.
 _KIT_PADS = 16
+
+# `loopfadeamt` — the `Loop Fade` knob — for a patch whose loops this pipeline detected
+# rather than read from the source file.
+#
+# This is the one number here that isn't derived, because the firmware doesn't say what
+# its units are: the parameter table carries only the name pair, and the factory bank
+# uses it in just 3 of the 481 cells that have the attribute (100, 200, 299 — everything
+# else ships 0, because factory samples are looped clean by hand). 200 is what
+# `SampInst/SciFi` uses, a 109-sample looped multisample and the closest factory analogue
+# to what this exporter produces.
+#
+# It does not need to be exact. The whole point of letting the device fade the seam
+# instead of baking it is that `Loop Fade` stays a knob on the front panel — this is a
+# starting value to turn, not a setting to live with.
+_LOOP_FADE = 200
 
 
 def _strip_periods(text: str) -> str:
@@ -79,6 +95,106 @@ def _strip_periods(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace(".", " ")).strip()
 
 
+# A folder label this short is already readable, so it ships as written; a longer
+# multi-word one is reduced to its initials. 11 is where "Vinyl Synths" becomes "VS"
+# while "Dream Synth" and "Third Party" stay spelled out — tuned by eye over the
+# ~2200-preset corpus, like the loop-detection constants elsewhere in this codebase.
+_VERBATIM_LIMIT = 11
+
+_TOKEN_RE = re.compile(r"[0-9A-Za-z']+")
+# A source folder's ordering prefix: "01. Bass", "1 BASS", "07 - FX". Capped at two
+# digits so a folder that simply starts with a number keeps it ("808 From Mars",
+# "2600 From Mars").
+_NUMBERING_RE = re.compile(r"^\d{1,2}\s*[.\-_)]?\s+")
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text)
+
+
+def _normalise_label(part: str) -> str:
+    """A source folder name as a browser label: no ordering prefix, no shouting."""
+    part = _NUMBERING_RE.sub("", part).strip()
+    # "1 BASS" -> "Bass", but short all-caps are acronyms — "Vinyl SP from Mars" and
+    # "06. FX" mean something, while "Sp" and "Fx" just read like typos.
+    return " ".join(
+        w.capitalize() if w.isalpha() and w.isupper() and len(w) >= 4 else w
+        for w in part.split()
+    )
+
+
+def _initials(part: str) -> str:
+    return "".join(t if t[0].isdigit() else t[0].upper() for t in _tokens(part))
+
+
+def _abbreviate(part: str) -> str:
+    """Initials for a long multi-word label, verbatim for anything else.
+
+    A single token is always kept whole — "BrontoScorpio" has no initials worth
+    taking and would collapse to "B".
+    """
+    if len(part) <= _VERBATIM_LIMIT or len(_tokens(part)) < 2:
+        return part
+    return _initials(part)
+
+
+def _prefix_labels(collection: str, sub: list[str]) -> list[str]:
+    """The grouping labels for a patch, from its collection and source subfolder.
+
+    Deliberately never looks at the preset's own name. This prefix is the only thing
+    that keeps a bank together in the browser's single flat alphabetical list, so
+    every preset out of one source folder has to get a byte-identical one — deriving
+    any part of it from the preset name would file "HS Bass Nine" and "HS Boomer"
+    under different headings.
+
+    A bank name usually repeats its collection ("Samples from Mars" /
+    "Vinyl Synths from Mars"); the repeat is dropped so it is said once.
+    """
+    labels, used = [], set()
+    for raw in (collection, *sub):
+        label = _normalise_label(raw)
+        fresh = [t for t in _tokens(label) if t.lower() not in used]
+        used.update(t.lower() for t in _tokens(label))
+        if fresh:
+            labels.append(" ".join(fresh))
+    return labels
+
+
+def _strip_label_echo(name: str, labels: list[str]) -> str:
+    """Drop the part of a preset name that a prefix label already says.
+
+    Libraries stamp their own name onto every preset they ship: "Orchestral Brass
+    Full Ensemble Marcato" inside the `Orchestral Brass` folder, "MS20 Fuzz Mod Vinyl
+    Synths C0" inside `Vinyl Synths from Mars`. A run of two or more tokens is an
+    echo wherever it sits — that last one ends with the folder name *then* the root
+    note, so head/tail matching alone would miss it. A single token only counts as an
+    echo at the head or the tail: "HS Bass Nine" under `1 BASS` is naming itself.
+    """
+    for label in labels:
+        ltoks = [t.lower() for t in _tokens(label)]
+        for n in range(len(ltoks), 0, -1):
+            run = ltoks[:n]
+            ntoks = [t.lower() for t in _tokens(name)]
+            if len(ntoks) <= len(run):
+                continue
+            pat = r"[^0-9A-Za-z']+".join(re.escape(t) for t in run)
+            if len(run) > 1:
+                stripped = re.sub(rf"(?<![0-9A-Za-z']){pat}(?![0-9A-Za-z'])", "", name, flags=re.I)
+            elif ntoks[: len(run)] == run:
+                stripped = re.sub(rf"^{pat}[^0-9A-Za-z']*", "", name, flags=re.I)
+            elif ntoks[-len(run):] == run:
+                stripped = re.sub(rf"[^0-9A-Za-z']*{pat}$", "", name, flags=re.I)
+            else:
+                continue
+            stripped = re.sub(r"\s{2,}", " ", stripped).strip(" -_")
+            # A run that didn't actually match leaves the name alone — fall through to
+            # the shorter runs of the same label rather than giving up on it.
+            if stripped and stripped != name:
+                name = stripped
+                break
+    return name
+
+
 def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
     """The single folder name a Bento patch lives in under SampInst/OneShots.
 
@@ -87,10 +203,23 @@ def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
     A folder one level deeper is still visible in the device's file browser (it's
     just a directory), but the patch loader never resolves it, so patches placed
     there silently fail to load (confirmed on hardware). The collection/subfolder
-    info that used to be separate nested folders is folded into the one folder name
+    info that would have been nested directories is folded into the one folder name
     instead, so two different libraries' same-named preset still don't collide.
+
+    That one name is also the *only* handle the device gives you: it is what the
+    browser prints and the key it sorts a single flat list by. Spelling every level
+    out in full ("Samples from Mars - Vinyl Synths from Mars - 02 Keys & Pads - …")
+    pushes what distinguishes a preset past the visible width, and 1242 patches that
+    all begin "Samples from Mars - " are indistinguishable on screen. So each level
+    is abbreviated to a short stable label and the library's echo is dropped out of
+    the preset name, leaving "SFM VS Keys Pads - Polaris Space Delay Soft D2".
+    Factory patch names run 9.5 characters on average and never exceed 18, which is
+    the yardstick this is aiming at.
     """
-    joined = " - ".join(part for part in (path.name, *sub, safe_name) if part)
+    labels = _prefix_labels(path.name, sub)
+    name = _strip_label_echo(safe_name, labels) or safe_name
+    prefix = " ".join(_abbreviate(label) for label in labels)
+    joined = f"{prefix} - {name}" if prefix else name
     return _strip_periods(safe_component(joined))
 
 
@@ -104,7 +233,9 @@ def _cell(track, cell_type: str, **params):
     return cell
 
 
-def _saminst_params(*, samtrigtype: str, loopmodes: str, multisammode: str, celldisppos: int) -> dict:
+def _saminst_params(
+    *, samtrigtype: str, loopmodes: str, multisammode: str, celldisppos: int, loopfadeamt: int = 0
+) -> dict:
     """The instrument cell's parameters, in the attribute order the device writes them.
 
     Everything not passed in is the factory's own untouched value: the pipeline has
@@ -139,9 +270,7 @@ def _saminst_params(*, samtrigtype: str, loopmodes: str, multisammode: str, cell
         "overdrive": "0",
         "multisammode": multisammode,
         "interpqual": "0",
-        # The pipeline bakes its crossfade into the audio itself, so the device's own
-        # loop fade stays off — applying it again would smear an already-faded seam.
-        "loopfadeamt": "0",
+        "loopfadeamt": str(loopfadeamt),
         "lfowave": "0",
         "lforate": "100",
         "lfoamount": "1000",
@@ -299,6 +428,19 @@ class BentoExporter:
         """A `multisamtrack` keyzones every sample, so the whole grid is used."""
         return list(notes)
 
+    @classmethod
+    def bakes_loop_crossfade(cls) -> bool:
+        """No. The Bento crossfades the loop seam itself, so the WAVs ship untouched.
+
+        The device has a `Loop Fade` parameter per instrument, which makes baking the
+        fade into the audio the wrong trade twice over: it would fade the same seam
+        twice, and it would weld a choice into the samples that the front panel could
+        otherwise adjust at any time. A baked crossfade is permanent — on the card there
+        is no way back to the unfaded audio. So the pipeline works the length out and
+        records it, ships the samples as captured, and `loopfadeamt` carries the job.
+        """
+        return False
+
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         if not sset.samples:
             raise ValueError(f"{config.name}: sample set is empty")
@@ -328,6 +470,19 @@ class BentoExporter:
         xml_path.write_bytes(
             b'<?xml version="1.0" encoding="UTF-8"?>\n' + etree.tostring(doc, pretty_print=True)
         )
+
+        # The browser's tag filter is the only way to narrow a flat card, and the index
+        # it reads is an ordinary file, so the build fills it in. Best-effort: a preset
+        # that is on the card but not in the index still browses and loads fine, so a
+        # read-only card or a lock we can't take must not fail the export.
+        try:
+            update_index(
+                path.parent / _PATCH_ROOT,
+                f"{_PATCH_ROOT}\\{kind}\\{flat}",
+                derive_tags(sset.category, path.name, sub, config.name),
+            )
+        except OSError as exc:
+            log.warning("%s: could not update the patch tag index (%s)", config.name, exc)
         return xml_path
 
     # ------------------------------------------------------------------
@@ -360,6 +515,16 @@ class BentoExporter:
                 name, looped, len(notes), int(loop_on),
             )
 
+        # An authored loop (a library WAV's `smpl` chunk, a Bitwig zone's own loop) is
+        # the author's own clean seam, and fading it would only smear the join they
+        # chose — exactly why the pipeline ships those verbatim. A detected loop has no
+        # such guarantee and wants the device's fade. Like `loopmodes`, this is one
+        # value for the whole instrument, so the majority decides.
+        authored = sum(
+            1 for n in notes if by_note[n].analysis.get("loop_source") == "authored_smpl"
+        )
+        fade = _LOOP_FADE if loop_on and authored * 2 < len(notes) else 0
+
         doc, track = _document("multisamtrack", outputbus=True)
         # samtrigtype 1 (note/gate, 58 of 65 factory multisamples) sustains while the
         # key is held, rather than the one-shot trigger a drum pad uses.
@@ -368,6 +533,7 @@ class BentoExporter:
             loopmodes="1" if loop_on else "0",
             multisammode="1",
             celldisppos=0,
+            loopfadeamt=fade,
         ))
 
         for i, note in enumerate(notes):

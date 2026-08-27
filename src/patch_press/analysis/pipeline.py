@@ -215,8 +215,12 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
     )
 
 
-def _bake_sample_loop(sample: Sample, crossfade_ms: float | None) -> Sample:
+def _bake_sample_loop(sample: Sample, crossfade_ms: float | None, bake: bool = True) -> Sample:
     """Bake the loop crossfade for a sample that kept its loop after the set-level vote.
+
+    `bake=False` works out the length and records it, but leaves the audio untouched —
+    for an exporter whose device crossfades the seam itself at playback (the Bento's
+    `loopfadeamt`), where baking would fade the same seam twice.
 
     Run once, after pluck classification (Fix #1), so a loop later stripped by a set-level
     "Pluck" vote never leaves a baked crossfade in the exported audio.
@@ -245,11 +249,12 @@ def _bake_sample_loop(sample: Sample, crossfade_ms: float | None) -> Sample:
         ms = crossfade_ms * 2 if fallback else crossfade_ms
     if ms <= 0:
         return sample
+    analysis = {**sample.analysis, "loop_crossfade_ms": round(ms, 2)}
+    if not bake:
+        return dataclasses.replace(sample, analysis=analysis)
     start, end = sample.loop_points
     baked = bake_loop_crossfade(sample.audio, start, end, ms)
-    return dataclasses.replace(
-        sample, audio=baked, analysis={**sample.analysis, "loop_crossfade_ms": round(ms, 2)}
-    )
+    return dataclasses.replace(sample, audio=baked, analysis=analysis)
 
 
 def _map_samples(fn, samples, workers: int, level: int, desc: str) -> list[Sample]:
@@ -287,7 +292,9 @@ def _map_samples(fn, samples, workers: int, level: int, desc: str) -> list[Sampl
     return out
 
 
-def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1) -> SampleSet:
+def analyze_sampleset(
+    sset: SampleSet, config: AnalysisConfig, workers: int = 1, bake_crossfade: bool = True
+) -> SampleSet:
     actual_tempo = config.tempo_bpm or sset.tempo_bpm
     loop_tempo = actual_tempo if config.loop_use_tempo else None
     level = logging.getLogger().getEffectiveLevel()
@@ -318,7 +325,7 @@ def analyze_sampleset(sset: SampleSet, config: AnalysisConfig, workers: int = 1)
     # Bake the loop crossfade now that the set-level pluck vote is final — samples whose
     # loops were just stripped keep their clean trimmed audio (Fix #1).
     if config.loop:
-        analyzed = [_bake_sample_loop(s, config.loop_crossfade_ms) for s in analyzed]
+        analyzed = [_bake_sample_loop(s, config.loop_crossfade_ms, bake_crossfade) for s in analyzed]
 
     if config.loop:
         samples_with_loop = sum(1 for s in analyzed if s.loop_points is not None)
