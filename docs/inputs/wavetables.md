@@ -7,12 +7,12 @@ nav_order: 5
 
 # Wavetables
 
-Wavetables are a different kind of animal from every other input on this site. A wavetable WAV isn't a recording of a note — it's a stack of single-cycle waveforms, each exactly 2048 samples long, that the Deluge's wavetable oscillator sweeps through under LFO or manual control.
+Wavetables are a different kind of animal from every other input on this site. A wavetable WAV isn't a recording of a note — it's a stack of single-cycle waveforms, each exactly 2048 samples long, that the target device's wavetable oscillator sweeps through under LFO or manual control.
 
 Because of that, **wavetables skip the whole analysis pipeline**: no trimming, no envelope detection, no loop hunting, no normalization. The file is copied to the target bit-for-bit (preserving Serum's `clm` metadata chunk so the target device knows how to slice it), and the exporter generates the surrounding preset with envelope and filter parameters chosen from spectral analysis of the wavetable itself.
 
 ```bash
-patch-press scan-wavetables "~/wavetables/ESW Core Tables" configs/ESWCore
+patch-press scan-wavetables "~/wavetables/Liam Wavetables" configs/LiamWT
 ```
 
 ## Format requirements
@@ -28,11 +28,11 @@ A length that isn't an exact 2048-multiple is fine: the trailing partial window 
 Stereo is accepted, and what happens to it depends on the target — the two devices genuinely differ:
 
 - **Polyend Tracker Mini / Tracker+**: both channels ship. The `.pti` length field counts frames *per channel*, so the window count is unchanged and the PCM is planar (all left, then all right) exactly like a stereo sample instrument.
-- **Deluge**: downmixed to mono, because its wavetable oscillator is mono-only — the firmware won't force-load a stereo file as a wavetable at all. The copy is no longer bit-for-bit for these files: it's re-encoded at the source's own bit depth, truncated to whole windows, with any `clm` chunk carried across.
+- **Deluge** and **1010music Bento**: downmixed to mono. The Deluge's wavetable oscillator is mono-only and the firmware won't force-load a stereo file as a wavetable at all; the Bento rejects one outright with `Wavetables must be mono WAVs.` The copy is no longer bit-for-bit for these files: it's re-encoded at the source's own bit depth, truncated to whole windows, with any `clm` chunk carried across.
 
 Downmixing is a real loss for material designed as stereo — Polyend's own stereo bank has tables whose channels correlate as low as −0.32, where mono summing cancels content rather than just narrowing it. So it's done only where the device leaves no choice.
 
-The archetype analysis always runs on the mono sum, on both targets.
+The archetype analysis always runs on the mono sum, on every target.
 
 ## Archetype detection
 
@@ -92,4 +92,6 @@ If the auto-detection picked something you disagree with, either:
 
 ## On the SD card
 
-Wavetables go into `SYNTHS/<name>/`, same as sample-based synths. The Deluge treats them as synth presets whose oscillator mode is set to `wavetable` in the XML. The WAV lives alongside in the same folder.
+- **Deluge**: `SYNTHS/<name>/`, same as sample-based synths — a synth preset whose oscillator mode is set to `wavetable` in the XML, with the WAV alongside in the same folder.
+- **Polyend Tracker Mini**: a self-contained `.pti`, the table embedded as PCM.
+- **1010music Bento**: a `wttrack` patch folder under `UserPatches/Wavetable/`, the table WAV next to `patch.xml` and named by the oscillator cell. See [Bento](../outputs/bento.html#wavetables) for why the firmware's built-in table catalogue isn't what selects it.

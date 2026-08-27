@@ -119,6 +119,31 @@ For `multisample` and `kit`, the note (and optional round-robin index) is parsed
 | `--note-step INT` | 3 | Only relevant when the library's note coverage is sparser than every semitone — patch-press keeps the closest sample per note. |
 | `--start-note NOTE` | C1 | Ignore samples below this note. |
 | `--end-note NOTE` | C6 | Ignore samples above this note. |
+| `--audio verbatim\|processed` | `verbatim` for `multisample`, `processed` for `kit`/`drumkit` | Whether the pipeline may change the library's audio. See [Shipping the vendor's own file](#shipping-the-vendors-own-file). |
+| `--loop-detect auto\|on\|off` | auto | Whether loop points may be derived, or only read from the files. See [Trusting the vendor's loops](#trusting-the-vendors-loops). |
+
+## Trusting the vendor's loops
+
+A commercial library usually says what loops and what doesn't: a sustaining note carries loop points in its WAV's RIFF `smpl` chunk, and a one-shot doesn't. Across the Samples From Mars synth packs that split is clean — of 516 preset folders, every folder is either fully looped or fully unlooped, never a mix. That is not an accident of the encoder; it is the author deciding, preset by preset.
+
+`--loop-detect auto` (the default) takes that seriously. It probes the folder you point it at:
+
+- **The library ships `smpl` loops somewhere** → detection is turned **off** for the whole scan (`loop_detect: false` in every config). Notes with a chunk get the author's exact loop; notes without one ship as one-shots, because that is what the author made them.
+- **The library ships none at all** → detection stays **on**, because nobody has expressed an intent and detection is the only way the preset ever loops.
+
+The probe's scope is the folder you scan, so scanning a pack root and scanning one of its category subfolders can give different answers when the pack loops some categories and not others (Junos From Mars loops Keys and Bass but not Leads and Pads). `--loop-detect off` forces the pack-wide reading.
+
+This matters beyond the loop itself: a **derived** loop needs a crossfade baked into the audio to hide its seam, and that bake is the only edit in the whole library path that is genuinely destructive. An authored loop already joins cleanly, so it ships with no fade at all.
+
+## Shipping the vendor's own file
+
+A library WAV is a finished master — already trimmed, already levelled. The pipeline's trim and normalize stages have nothing to add to it, and running them anyway has a cost that isn't obvious: the audio in memory is float32 stereo, so once any stage has touched it the exporter has to re-encode, and a vendor's 24-bit mono file lands on the card as a 16-bit dual-mono approximation of itself.
+
+So `--audio verbatim` (the default for melodic libraries) writes `trim: false` and `normalize: none` into the generated configs. Any sample that then reaches an exporter unmodified is **copied byte-for-byte** — the vendor's bit depth, channel count and metadata chunks all intact. Both the Deluge and the Bento read 16/24-bit mono or stereo natively, so there is nothing to convert to. It is usually smaller too: 24-bit mono is three bytes a frame where 16-bit stereo is four.
+
+Drum kits default to `--audio processed` instead. A pad is expected to hit full scale and be balanced with the pad's own volume, which is what the `drums` profile's per-sample normalize does and what the vendors mostly don't — measured across this corpus a kit folder needs a median +15 dB to get there. Pass `--audio verbatim` for a kit library that is already levelled.
+
+`--audio processed` on a melodic library restores the old behaviour: trim to −60 dBFS and a per-set gain to −1 dBFS. Across Samples From Mars that gain is a median +5 dB, so this is the flag to reach for if the verbatim presets sit too quiet next to your rendered ones.
 
 ## Which type is this?
 

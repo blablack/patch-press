@@ -28,14 +28,18 @@ the device firmware (`bento1.bin`) — no format guesswork:
   collection folder passed via `--path` all fold into one flat folder name
   (` - `-joined) instead of nested directories — see `_flat_patch_folder`.
 
-Wavetables are deliberately NOT exported. The `wttrack` oscillator selects its
-table with `wavesel`, a 0-based index into a fixed list of 103 table names
-compiled into the firmware; across all 130 wavetable cells in the factory bank
-that index matches the referenced filename exactly, with no exceptions. There is
-no index a user-supplied table could claim, so a wavetable patch built from
-patch-press content would name a file the oscillator cannot select. Category
-WAVETABLE therefore raises rather than shipping a patch that looks right and
-plays a factory table.
+- Wavetables are a third root, `Wavetable` (a `wttrack`). The oscillator names its
+  table in the cell's `filename`, exactly like a sample cell, and the WAV ships in the
+  patch folder next to `patch.xml`. `wavesel` sits beside it as a 0-based index into a
+  103-entry catalogue the firmware does carry (display names at 0x660f8, filenames at
+  0x664f0); all 130 factory wavetable cells agree with their own `filename`. What the
+  firmware does NOT carry is the audio — 103 tables at ~3 MB each is ~300 MB against a
+  1.4 MB binary, and there is no wavetable library folder anywhere on the card — so
+  even a factory patch can only be reading the WAV beside its own patch.xml, which is
+  why every one of them ships a byte-identical copy of each table it uses. The
+  catalogue is the picker; `filename` is the audio. The firmware's load path is
+  file-based to match: `Double-tap to load WAV`, `No WAV`, `Invalid Wavetable`,
+  `Wavetables must be mono WAVs.`
 """
 
 import logging
@@ -44,13 +48,19 @@ from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
-import soundfile as sf
 from lxml import etree
 
 from ...analysis.drumkit import classify_instrument
 from ...config.schema import OutputConfig
 from ...model.sample import Category, Sample, SampleSet
-from ._common import safe_component, sample_wav_name, subfolder_parts, wav_frame_count
+from ._common import (
+    safe_component,
+    sample_wav_name,
+    subfolder_parts,
+    wav_frame_count,
+    write_sample_wav,
+    write_wavetable_wav,
+)
 from .bento_index import derive_tags, update_index
 
 log = logging.getLogger(__name__)
@@ -60,6 +70,7 @@ log = logging.getLogger(__name__)
 _PATCH_ROOT = "UserPatches"
 _TYPE_MULTISAMPLE = "SampInst"
 _TYPE_KIT = "OneShots"
+_TYPE_WAVETABLE = "Wavetable"
 
 # Every factory kit has exactly 16 pads (416 saminst cells across 26 kits), addressed
 # by `celldisppos` 0-15.
@@ -79,6 +90,55 @@ _KIT_PADS = 16
 # instead of baking it is that `Loop Fade` stays a knob on the front panel — this is a
 # starting value to turn, not a setting to live with.
 _LOOP_FADE = 200
+
+
+# --- wavetable (`wttrack`) ----------------------------------------------------------
+# The catalogue index written alongside `filename`. Nothing in this pipeline has a
+# catalogue entry to claim, and the audio comes from the file (see the module docstring),
+# so this only decides which of the 103 factory names the picker displays. It is kept
+# in range rather than set to a sentinel: an out-of-range index is the one value the
+# firmware has a message for (`Invalid Wavetable`), and refusing to open the patch would
+# be a worse failure than showing a name the patch does not use.
+_WT_WAVESEL = 0
+
+# `wavepos` runs 0..255 across the whole factory bank — a scan position over the table,
+# not a window index (factory tables are 508 windows long, ours are 8 or 255).
+_WT_POS_MAX = 255
+
+# `pitch` is millisemitones: the factory bank's `osc pitch="-24000"` is two octaves down.
+# A `wttrack` always has two wavetable cells, and the 37 single-table factory patches
+# drive both from one file, detuned a few cents apart with the position LFO inverted on
+# the second (Bigbrute: 11 cents apart, wavepos modulated +481 / -503). Same here — the
+# cell exists either way, and silencing it would throw away the width for nothing.
+_WT_DETUNE = 60
+
+# Our archetypes only ever ask for a low-pass. Filter `Type` is 0..3 in the factory bank
+# and 0 is both the most common and the one every bright/dark cutoff sweep in it uses.
+_WT_FILTER_TYPES = {"lpf": 0}
+
+
+def _p1000(frac: float) -> str:
+    """A 0..1 analysis fraction as one of the Bento's 0..1000 integer parameters."""
+    return str(max(0, min(1000, round(frac * 1000))))
+
+
+def _wt_track_params() -> dict:
+    """Track-level parameters of a `wttrack`, in the device's attribute order.
+
+    A different set from `_track_params`: a wavetable track carries the sampler's
+    recording parameters (a `samtrack` does not) and no `out3gain`/`fx1send` pair.
+    Byte-identical across all 66 factory wavetable patches bar `selcellpos`/`cellname`.
+    """
+    return {
+        "selcellpos": "0", "celldisppos": "0", "cellname": "", "selseqpos": "0",
+        "seqplayenable": "1", "trkgain": "0", "trkpan": "0", "trkmute": "0",
+        "trksolo": "0", "trkfx1send": "0", "trkfx2send": "0", "outputbus": "0",
+        "midiinport": "0", "midiinchan": "0", "cc1inport": "0", "cc1inchan": "0",
+        "cc2inport": "0", "midioutport": "0", "midioutchan": "0", "padrowoffset": "0",
+        "recactive": "0", "recinput": "0", "recgain": "0", "recautoplay": "0",
+        "recpresetlen": "0", "recquant": "3", "recmonmode": "1", "recusethres": "0",
+        "recthresh": "-30000",
+    }
 
 
 def _strip_periods(text: str) -> str:
@@ -358,7 +418,12 @@ def _write_wavs(sset: SampleSet, patch_dir: Path) -> dict[tuple[int, int, int], 
     used_names: set[str] = set()
     for s in sset.samples:
         p = patch_dir / sample_wav_name(s, sset.tempo_bpm, used_names)
-        sf.write(str(p), s.audio.data.T, s.audio.sample_rate)
+        if sset.category == Category.WAVETABLE:
+            # The firmware refuses a stereo table outright ("Wavetables must be mono
+            # WAVs."), so this is the one place a Bento sample can't ship as captured.
+            write_wavetable_wav(Path(s.metadata["source_file"]), p)
+        else:
+            write_sample_wav(s, p)
         paths[(s.note, s.velocity, s.round_robin)] = p
     return paths
 
@@ -394,6 +459,22 @@ def _select_pads(by_note: dict[int, list[Sample]], limit: int) -> list[int]:
     return sorted(kept)
 
 
+def _tag_name(sset: SampleSet, name: str) -> str:
+    """The preset name the tag index reads, with a wavetable's archetype appended.
+
+    A wavetable's folder path says nothing about the sound — the libraries are flat
+    banks of table names ("Liam Wavetables", "Polyend Wavetables") — but the scan
+    already classified each file into an archetype, and four of the six are literally
+    Bento tag words (pad, bass, lead, drone -> Atmosphere). Feeding it in as if it were
+    part of the name lets derive_tags apply its normal precedence: a real folder label
+    still wins, and this only speaks when nothing else does.
+    """
+    if sset.category != Category.WAVETABLE:
+        return name
+    wt = sset.source_metadata.get("wavetable")
+    return f"{name} {wt.archetype.replace('_', ' ')}" if wt is not None else name
+
+
 def _loop_bounds(sample: Sample, frames: int) -> tuple[int, int]:
     """Loop points for one sample, in frames.
 
@@ -412,15 +493,15 @@ class BentoExporter:
     def expected_outputs(cls, output: OutputConfig, path: Path) -> list[Path]:
         """Paths whose existence means this preset is already exported.
 
-        A config alone doesn't say kit-vs-multisample (that's decided by the sample
-        set's category at export time), so both candidate patch folders are listed —
-        callers treat "any exists" as done.
+        A config alone doesn't say kit-vs-multisample-vs-wavetable (that's decided by
+        the sample set's category at export time), so every candidate patch folder is
+        listed — callers treat "any exists" as done.
         """
         sub = subfolder_parts(output.subfolder)
         flat = _flat_patch_folder(path, sub, safe_component(output.name))
         return [
             path.parent.joinpath(_PATCH_ROOT, kind, flat, "patch.xml")
-            for kind in (_TYPE_MULTISAMPLE, _TYPE_KIT)
+            for kind in (_TYPE_MULTISAMPLE, _TYPE_KIT, _TYPE_WAVETABLE)
         ]
 
     @classmethod
@@ -444,16 +525,10 @@ class BentoExporter:
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         if not sset.samples:
             raise ValueError(f"{config.name}: sample set is empty")
-        if sset.category == Category.WAVETABLE:
-            raise ValueError(
-                f"{config.name}: the Bento can't play user wavetables. Its wavetable "
-                f"oscillator picks a table by `wavesel`, an index into the 103 tables "
-                f"built into the firmware, so there is no way to point it at this file "
-                f"(see io/exporters/bento.py). Export wavetables with --format deluge "
-                f"or --format pti."
-            )
-
-        kind = _TYPE_KIT if sset.category == Category.DRUM else _TYPE_MULTISAMPLE
+        kind = {
+            Category.DRUM: _TYPE_KIT,
+            Category.WAVETABLE: _TYPE_WAVETABLE,
+        }.get(sset.category, _TYPE_MULTISAMPLE)
         sub = subfolder_parts(config.subfolder)
         flat = _flat_patch_folder(path, sub, safe_component(config.name))
         patch_dir = path.parent.joinpath(_PATCH_ROOT, kind, flat)
@@ -461,6 +536,8 @@ class BentoExporter:
 
         if sset.category == Category.DRUM:
             doc = self._build_kit(sset, wav_paths, config.name)
+        elif sset.category == Category.WAVETABLE:
+            doc = self._build_wavetable(sset, wav_paths)
         else:
             doc = self._build_multisample(sset, wav_paths, config.name)
 
@@ -479,11 +556,95 @@ class BentoExporter:
             update_index(
                 path.parent / _PATCH_ROOT,
                 f"{_PATCH_ROOT}\\{kind}\\{flat}",
-                derive_tags(sset.category, path.name, sub, config.name),
+                derive_tags(sset.category, path.name, sub, _tag_name(sset, config.name)),
             )
         except OSError as exc:
             log.warning("%s: could not update the patch tag index (%s)", config.name, exc)
         return xml_path
+
+    # ------------------------------------------------------------------
+    def _build_wavetable(self, sset: SampleSet, wav_paths: dict[tuple[int, int, int], Path]):
+        """A `wttrack` playing one user table, shaped by the archetype scan-wavetables picked.
+
+        The cell order is the factory bank's and does not vary: two wavetable cells,
+        an analog osc, two filters, two envelopes, two LFOs, the modulation sequencer,
+        the part parameters, then the effects. Every one of the 66 factory wavetable
+        patches carries all of them, so all of them are written even where this patch
+        leaves them neutral.
+
+        Two things are worth knowing about the mapping. The analysis calls the
+        position modulator `lfo2` because that is the LFO the Deluge uses for it; on
+        the Bento the factory bank drives `wavepos` from LFO 1 (93 cells to LFO 2's
+        13), so `lfo2_rate`/`lfo2_depth` land on LFO 1 here. And envelope 1 is the amp
+        envelope implicitly — it needs no `modsource`, which is why the archetype's
+        ADSR goes there while envelope 2 stays neutral and unrouted, matching what the
+        Deluge export does with the same analysis.
+        """
+        wt = sset.source_metadata["wavetable"]
+        s = sset.samples[0]
+        wav_name = wav_paths[(s.note, s.velocity, s.round_robin)].name
+
+        doc = etree.Element("document")
+        session = etree.SubElement(doc, "session", version="1")
+        track = etree.SubElement(session, "track", type="wttrack")
+        _params(track, **_wt_track_params())
+
+        pos = str(round(max(0.0, min(1.0, wt.wt_position)) * _WT_POS_MAX))
+        depth = round(max(0.0, min(1.0, wt.lfo2_depth)) * 1000)
+        for detune, polarity in ((-_WT_DETUNE, 1), (_WT_DETUNE, -1)):
+            cell = _cell(
+                track, "wavetable",
+                pitch=str(detune), level="1000", wavesel=str(_WT_WAVESEL),
+                wavepos=pos, samlen="0", filename=wav_name,
+            )
+            etree.SubElement(cell, "modsource", dest="wavepos", src="lfo1",
+                             slot="0", amount=str(depth * polarity))
+
+        # The analog oscillator sits alongside the wavetable pair and is silenced: the
+        # preset is the table, and anything mixed under it is a sound the source file
+        # never had.
+        _cell(track, "osc", pitch="0", level="0", waveform="0", dutycyc="500")
+
+        _cell(track, "filter",
+              filtertype=str(_WT_FILTER_TYPES[wt.filter_type]),
+              cutoff=_p1000(wt.filter_cutoff), res="250",
+              filtenable="1", filtparallel="0")
+        _cell(track, "filter", filtertype="0", cutoff="500", res="500",
+              filtenable="0", filtparallel="0")
+
+        _cell(track, "env",
+              envattack=_p1000(wt.attack), envdecay=_p1000(wt.decay),
+              envsus=_p1000(wt.sustain), envrel=_p1000(wt.release), velamount="0")
+        _cell(track, "env", envattack="0", envdecay="500", envsus="1000",
+              envrel="500", velamount="0")
+
+        # LFO 1 sweeps the table (see the modsources above); LFO 2 is unrouted, so its
+        # depth is zero rather than merely unconnected.
+        rate = _p1000(wt.lfo2_rate)
+        _cell(track, "lfo", lfowave="0", lforate=rate, lfoamount="1000",
+              lfokeytrig="0", lfobeatsync="0", lforatebeatsync=rate)
+        _cell(track, "lfo", lfowave="0", lforate="500", lfoamount="0",
+              lfokeytrig="0", lfobeatsync="0", lforatebeatsync="500")
+
+        seq = _cell(track, "seqmod", steplen="8", seqsteps="16", seqkeytrig="0",
+                    seqquant="0", quantsize="0")
+        # 14 factory patches leave the modulation sequencer empty exactly like this.
+        etree.SubElement(seq, "sequence")
+
+        _cell(track, "partparms", globtempo="120", unisonmode="0", unisondetune="0",
+              unisonspread="0", unisonvcount="4", oscphasereset="1", midibend="2",
+              macroxsnap="0", macroysnap="0")
+
+        _cell(track, "flangerdist", flangeamount="0", lforate="500", feedback="0",
+              distamount="0")
+        _cell(track, "delay", amount="0", feedback="300", filtenable="0",
+              cutoffFx="500", filtquality="1000", delaypingpong="1",
+              dealybeatsync="1", delay="400", delaymustime="6")
+        _cell(track, "fxlemon", flangeamount="0", flangelforate="500",
+              flangefeedback="0", distamount="0", phaseamount="0", phaselforate="500",
+              phasefeedback="500", chorusamount="0", chorusrate="500", fx1send="0",
+              fx2send="0", fx3type="0")
+        return doc
 
     # ------------------------------------------------------------------
     def _build_multisample(

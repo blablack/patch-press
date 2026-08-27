@@ -24,7 +24,7 @@ Trims leading and trailing silence. Walks a mono-downmixed RMS envelope from eac
 
 Trim never cuts into an authored loop. If the input WAV has a `smpl` chunk with loop start/end (see [Honoring authored loops](#honoring-authored-loops) below), trim is constrained to stay outside those bounds.
 
-**Off with:** `analysis.trim: false` in the config.
+**Off with:** `analysis.trim: false` in the config — which is what the scan commands write for a melodic library source, whose files the vendor already trimmed. Trimming them changes nothing audible and costs the byte-for-byte copy (see [Shipping the vendor's own file](inputs/sample-libraries.html#shipping-the-vendors-own-file)).
 
 ## 2. Envelope detection
 
@@ -77,6 +77,8 @@ When patch-press reads a WAV that has a `smpl` chunk with at least one loop, it 
 
 The Deluge itself doesn't read the `smpl` chunk — the [Deluge exporter](outputs/deluge.html) writes loop points into the XML. So patch-press only *consumes* `smpl` on input; whether an exporter re-writes one on output is up to that specific target.
 
+The absence of a chunk is authored too. `analysis.loop_detect: false` says so: derive nothing, use only what the file carries, and let a file with no chunk ship as the one-shot its author made it. The scan commands set this for any library that ships `smpl` loops at all — see [Trusting the vendor's loops](inputs/sample-libraries.html#trusting-the-vendors-loops).
+
 ## 5. Normalize
 
 Applies gain so the sample set peaks at −1 dB. Three modes:
@@ -85,4 +87,4 @@ Applies gain so the sample set peaks at −1 dB. Three modes:
 |---|---|
 | `per_set` (default for synth/pad/pluck) | All samples in the set share the same gain, chosen so the loudest hits −1 dB. Preserves relative velocity dynamics and round-robin variation. |
 | `per_sample` (default for drums) | Every sample is independently normalized. Loses velocity dynamics on purpose — each drum hit gets its own headroom. |
-| `none` | No gain applied. Useful when you're feeding into another normalization stage. |
+| `none` | No gain applied. The default for melodic library sources, whose files are already levelled — and the only way their audio reaches the card unmodified (see [Shipping the vendor's own file](inputs/sample-libraries.html#shipping-the-vendors-own-file)). |

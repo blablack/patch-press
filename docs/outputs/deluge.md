@@ -45,6 +45,8 @@ note<MIDI>_T<TEMPO>_V<VELOCITY>_RR<INDEX>.wav
 
 Example: `note060_T120_V100_RR1.wav` = MIDI 60 (C4), tempo 120 BPM, velocity 100, round-robin 1. This lets a human eyeball the folder and spot missing notes or wrong velocities without loading anything.
 
+A sample that came from a library keeps its own filename instead, and when the analysis left its audio untouched the vendor's file is **copied byte-for-byte** rather than re-encoded — original bit depth, channel count and metadata chunks intact. See [Shipping the vendor's own file](../inputs/sample-libraries.html#shipping-the-vendors-own-file).
+
 ## XML: multisample synth
 
 ```xml

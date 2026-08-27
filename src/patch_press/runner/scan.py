@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import zipfile
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -694,7 +695,92 @@ def _find_closest_wavs(wavs: list[Path], targets: list[int]) -> list[Path]:
     return selected
 
 
-def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str | None]:
+# How much of a sample library's own audio a scan is allowed to change.
+#
+# "verbatim" is the default: a commercial library is a finished product — already trimmed,
+# already levelled, already looped where its author meant it to loop — so the pipeline's
+# trim and normalize stages have nothing to add and would only stop the exporters putting
+# the vendor's own file on the card byte-for-byte (io/exporters/_common.py:write_sample_wav).
+# "processed" restores the trim + per-set normalize a rendered capture gets, for a library
+# that really does ship untrimmed or wildly uneven material.
+AUDIO_MODES = ("verbatim", "processed")
+
+
+def _default_audio_mode(library_type: str) -> str:
+    """Which audio mode a scan uses when the user didn't pick one.
+
+    Melodic material ships verbatim: a note of a multisample is a recording, and the
+    vendor's own level and trim are part of it.
+
+    Drum one-shots don't: a pad is expected to hit full scale and be balanced with the
+    pad's own volume, which is what the `drums` profile's per-sample normalize does (and
+    what the vendors themselves don't do — measured across this corpus, a kit folder needs
+    a median +15 dB to get there). `--audio verbatim` still turns it off for a library
+    that's already levelled.
+    """
+    return "processed" if library_type in ("kit", "drumkit") else "verbatim"
+
+# Whether loop points may be derived for this library (AnalysisConfig.loop_detect).
+# "auto" answers it from the library itself: a vendor who ships `smpl` chunks has already
+# said, file by file, what loops — so trust them and derive nothing. A vendor who ships
+# none has said nothing, so detection is the only way the preset ever loops.
+LOOP_DETECT_MODES = ("auto", "on", "off")
+
+
+def _library_ships_authored_loops(root: Path, max_probe: int = 48) -> bool:
+    """True if any WAV under `root` carries an `smpl` loop — i.e. this vendor uses them.
+
+    Bounded: a few files per folder, `max_probe` overall, stopping at the first hit. The
+    question is about the library's convention, not an exhaustive census, and the answer
+    only has to be right about whether loop points are *ever* authored here.
+    """
+    probed = 0
+    queue = deque([root])
+    while queue:
+        folder = queue.popleft()
+        for wav in sorted(folder.glob("*.wav", case_sensitive=False))[:3]:
+            if read_loop_points(wav) is not None:
+                return True
+            probed += 1
+            if probed >= max_probe:
+                return False
+        # Breadth-first over sorted children rather than a sorted rglob(): the answer has
+        # to be deterministic (it decides what lands in the generated configs), but
+        # materialising every path under a 45k-file library to answer "any?" does not.
+        queue.extend(sorted(p for p in folder.iterdir() if p.is_dir()))
+    return False
+
+
+def _resolve_loop_detect(mode: str, root: Path) -> bool:
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return not _library_ships_authored_loops(root)
+
+
+def _library_analysis_block(audio: str, loop_detect: bool) -> str:
+    """The `analysis:` block for a config whose audio is a finished library file.
+
+    Only settings that differ from the defaults are written, so a config stays readable
+    and every line in it is a decision someone actually made.
+    """
+    lines = []
+    if not loop_detect:
+        lines.append("  loop_detect: false")
+    if audio == "verbatim":
+        # Both are no-ops on a vendor-mastered file, and either one silently forces a
+        # re-encode of audio we could otherwise copy.
+        lines.append("  trim: false")
+        lines.append("  normalize: none")
+    if not lines:
+        return ""
+    return "analysis:\n" + "\n".join(lines) + "\n\n"
+
+
+def _detect_folder_profile(
+    subfolder: Path, library_type: str, loop_detect: bool = True
+) -> tuple[str, str | None]:
     """Return (profile, review_flag) for the folder, classifying the candidate WAVs.
 
     Like the VST/CLAP paths, a sustained-but-continuously-evolving timbre (a swept filter that never
@@ -708,7 +794,7 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str
         return "drums", None
 
     if library_type == "drumkit":
-        hit_wavs = sorted(subfolder.glob("*.wav"))
+        hit_wavs = sorted(subfolder.glob("*.wav", case_sensitive=False))
         if not hit_wavs:
             return "drums", "no WAV files found directly in this folder — not a flat drumkit folder"
         categories = {classify_instrument(wav.stem) for wav in hit_wavs}
@@ -722,11 +808,23 @@ def _detect_folder_profile(subfolder: Path, library_type: str) -> tuple[str, str
             )
         return "drums", None
 
-    wavs = sorted(subfolder.glob("*.wav"))
+    wavs = sorted(subfolder.glob("*.wav", case_sensitive=False))
     if not wavs:
         return "synth", None
 
     candidates = _find_closest_wavs(wavs, [48, 60, 72]) or wavs[:3]
+
+    if not loop_detect:
+        # With detection off the profile has exactly one job left for a library source:
+        # say whether the preset loops. The files themselves answer that — an `smpl` chunk
+        # means the author looped it, its absence means they did not — so there is nothing
+        # for the envelope classifier or the evolving-timbre gate to decide, and no audio
+        # needs decoding at all. (pad vs synth only differs in capture duration and how
+        # loops are *found*, neither of which applies here.)
+        if any(read_loop_points(wav) is not None for wav in candidates):
+            return "synth", None
+        return "pluck", None
+
     samples = []
     for wav in candidates:
         audio = AudioBuffer.from_file(wav)
@@ -759,11 +857,26 @@ def scan_library(
     note_step: int = DEFAULT_NOTE_STEP,
     note_lo: int = DEFAULT_START_NOTE,
     note_hi: int = DEFAULT_END_NOTE,
+    audio: str | None = None,
+    loop_detect: str = "auto",
     debug: bool = False,
 ) -> ScanSummary:
     _validate_capture_params(note_step, None, note_lo, note_hi)
     config_dir.mkdir(parents=True, exist_ok=True)
     library_stem = _sanitize(library_path.name)
+
+    audio_mode = audio or _default_audio_mode(library_type)
+    detect = _resolve_loop_detect(loop_detect, library_path)
+    why = (
+        "no authored smpl loops found — nothing to trust"
+        if detect
+        else "library ships authored smpl loops — using those only"
+    )
+    tqdm.write(
+        f"  audio: {audio_mode}, loop detection: {'on' if detect else 'off'}"
+        + (f" ({why})" if loop_detect == "auto" else "")
+    )
+    analysis_block = _library_analysis_block(audio_mode, detect)
 
     subfolders = sorted(p for p in library_path.iterdir() if p.is_dir() and not p.name.startswith("."))
     if debug:
@@ -778,13 +891,13 @@ def scan_library(
         # `subdirs` whenever direct WAVs are present, so mirror that priority here and fall back
         # to flat-drumkit handling per-subfolder instead of silently emitting an unparseable config.
         effective_type = library_type
-        if library_type == "kit" and any(subfolder.glob("*.wav")):
+        if library_type == "kit" and any(subfolder.glob("*.wav", case_sensitive=False)):
             effective_type = "drumkit"
 
         if profile is not None:
             folder_profile, review_flag = profile, None
         else:
-            folder_profile, review_flag = _detect_folder_profile(subfolder, effective_type)
+            folder_profile, review_flag = _detect_folder_profile(subfolder, effective_type, detect)
         if review_flag:
             tqdm.write(f"  {subfolder.name} → {folder_profile} ({review_flag})")
         else:
@@ -805,6 +918,7 @@ def scan_library(
             f"\n"
             f"profile: {folder_profile}\n"
             f"{capture_block}\n"
+            f"{analysis_block}"
             f"output:\n"
             f'  name: "{subfolder.name}"\n'
         )
@@ -897,6 +1011,8 @@ def scan_oneshots(
     folder: Path,
     config_dir: Path,
     profile: str | None = None,
+    audio: str | None = None,
+    loop_detect: str = "auto",
     debug: bool = False,
 ) -> ScanSummary:
     """Generate one config per WAV in a folder of single-note oneshot presets.
@@ -908,7 +1024,9 @@ def scan_oneshots(
     source.note so LibraryAdapter doesn't need to re-parse it from the name.
     """
     config_dir.mkdir(parents=True, exist_ok=True)
-    wavs = sorted(folder.glob("*.wav"))
+    detect = _resolve_loop_detect(loop_detect, folder)
+    analysis_block = _library_analysis_block(audio or _default_audio_mode("oneshots"), detect)
+    wavs = sorted(folder.glob("*.wav", case_sensitive=False))
     if debug:
         wavs = wavs[:5]
     summary = ScanSummary(total=len(wavs))
@@ -916,10 +1034,18 @@ def scan_oneshots(
 
     for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
         preset_name = wav.stem
-        audio = AudioBuffer.from_file(wav)
+        buf = AudioBuffer.from_file(wav)
         pitch_class = _parse_note_letter(preset_name)
-        note, note_flag = _detect_oneshot_note(audio, pitch_class)
-        preset_profile = profile if profile is not None else _detect_oneshot_profile(audio, note)
+        note, note_flag = _detect_oneshot_note(buf, pitch_class)
+        if profile is not None:
+            preset_profile = profile
+        else:
+            preset_profile = _detect_oneshot_profile(buf, note)
+            # An authored `smpl` loop is the author saying this sound sustains; a `pluck`
+            # classification here only means "short envelope", and would drop their loop
+            # on the floor (profile pluck sets analysis.loop: false).
+            if preset_profile == "pluck" and read_loop_points(wav) is not None:
+                preset_profile = "synth"
 
         flags = [note_flag] if note_flag else []
         review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
@@ -932,6 +1058,7 @@ def scan_oneshots(
             f"\n"
             f"profile: {preset_profile}\n"
             f"\n"
+            f"{analysis_block}"
             f"output:\n"
             f'  name: "{preset_name}"\n'
         )
@@ -1069,7 +1196,7 @@ def scan_wavetables(
     card unmodified; nothing here mutates the audio.
     """
     config_dir.mkdir(parents=True, exist_ok=True)
-    wavs = sorted(folder.glob("*.wav"))
+    wavs = sorted(folder.glob("*.wav", case_sensitive=False))
     if debug:
         wavs = wavs[:5]
     summary = ScanSummary(total=len(wavs))
@@ -1126,6 +1253,7 @@ def scan_kit_assemble(
     hits_root: Path,
     config_dir: Path,
     min_categories: int = 2,
+    audio: str | None = None,
 ) -> ScanSummary:
     """Generate one synthetic kit config per shared "flavor" tag found across a
     bag-of-hits library tree (e.g. Samples From Mars 909_from_mars/Individual Hits).
@@ -1140,6 +1268,8 @@ def scan_kit_assemble(
     """
     config_dir.mkdir(parents=True, exist_ok=True)
     library_stem = _sanitize(hits_root.name)
+    # A kit is one-shots: no loop to find, so only the audio mode is a live question here.
+    analysis_block = _library_analysis_block(audio or _default_audio_mode("drumkit"), True)
 
     hits = walk_hit_tree(hits_root)
     flavors = discover_flavors(hits, min_families=min_categories)
@@ -1172,6 +1302,7 @@ def scan_kit_assemble(
             f"\n"
             f"profile: drums\n"
             f"\n"
+            f"{analysis_block}"
             f"output:\n"
             f'  name: "{preset_name}"\n'
         )

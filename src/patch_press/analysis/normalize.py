@@ -12,6 +12,8 @@ def _peak(buf: AudioBuffer) -> float:
 
 
 def _apply_gain(sample: Sample, gain: float) -> Sample:
+    if gain == 1.0:
+        return sample
     normed = AudioBuffer(
         data=(sample.audio.data * gain).astype(np.float32),
         sample_rate=sample.audio.sample_rate,
@@ -23,7 +25,9 @@ def _apply_gain(sample: Sample, gain: float) -> Sample:
         audio=normed,
         loop_points=sample.loop_points,
         analysis={**sample.analysis, "normalize_gain_db": round(20 * np.log10(gain), 2)},
-        metadata=sample.metadata,
+        # Scaled audio is no longer the source file's audio — it can't be copied verbatim
+        # (see io/exporters/_common.py:write_sample_wav).
+        metadata={**sample.metadata, "audio_verbatim": False},
     )
 
 

@@ -62,7 +62,7 @@ def walk_hit_tree(root: Path) -> list[HitFile]:
 
     def _walk(folder: Path, tags: frozenset[str]) -> None:
         subdirs = sorted(p for p in folder.iterdir() if p.is_dir() and not p.name.startswith("."))
-        for wav in sorted(folder.glob("*.wav")):
+        for wav in sorted(folder.glob("*.wav", case_sensitive=False)):
             hits.append(HitFile(category=classify_instrument(wav.stem), tags=tags, path=wav))
         for sub in subdirs:
             resolved = classify_folder_name(sub.name)

@@ -23,6 +23,7 @@ Not every preset gets a loop. patch-press deliberately skips looping when:
 1. **The profile has `loop: false`.** The `pluck` and `drums` profiles turn looping off — a plucked bass isn't held, a kick doesn't sustain, there's nothing to loop. `synth` and `pad` turn it on.
 2. **The envelope classifier called it a pluck.** Even under `synth`/`pad`, if the sample's RMS collapses to under 10% of peak by the end, the loop stage doesn't run. This is the correct call: a real pluck has no sustain region, and any "loop" would be looping silence or a decayed tail.
 3. **No candidate passed the quality gates AND the fallback couldn't find zero-crossings.** Very rare. Almost always the fallback kicks in.
+4. **`analysis.loop_detect: false` and the file carries no authored loop.** Detection is off, so the only loop points that count are the ones in the file's own `smpl` chunk — and this file has none, which is its author saying it is a one-shot. Set by the scan commands for any library that ships `smpl` loops; see [Trusting the vendor's loops](inputs/sample-libraries.html#trusting-the-vendors-loops).
 
 If you're expecting a loop and not getting one, the classifier is the usual suspect. See [I want a loop but there isn't one](#i-want-a-loop-but-there-isnt-one) below.
 

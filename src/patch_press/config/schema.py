@@ -96,6 +96,17 @@ class AnalysisConfig:
     pitch_verify: bool = True
     pitch_tolerance_cents: float = 50.0
     loop: bool = False
+    # Whether loop points may be DERIVED when the source carries none of its own.
+    # `loop` says the preset should loop; this says where the points are allowed to come
+    # from. False = authored loops only (a WAV's `smpl` chunk, a Bitwig zone).
+    #
+    # A library whose author ships loop points has already decided, file by file, what
+    # loops: a WAV with no `smpl` chunk is one they chose to leave as a one-shot. Deriving
+    # a loop there overrides that decision AND forces a crossfade to be baked into audio
+    # we would otherwise ship untouched — the only genuinely destructive edit in the whole
+    # library path. `scan-library --loop-detect auto` (the default) turns this off for any
+    # library that ships `smpl` loops at all, and leaves it on for one that ships none.
+    loop_detect: bool = True
     loop_use_tempo: bool = False
     loop_quality_threshold: float = 0.8
     # Loop crossfade length for *detected* loops (VST/CLAP renders, non-smpl WAV libraries).

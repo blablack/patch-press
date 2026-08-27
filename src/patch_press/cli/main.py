@@ -1,4 +1,5 @@
 import argparse
+import glob
 import logging
 import os
 import sys
@@ -23,8 +24,10 @@ from ..runner.batch import run_batch
 from ..runner.pipeline import classify as classify_run
 from ..runner.pipeline import run
 from ..runner.scan import (
+    AUDIO_MODES,
     DEFAULT_DURATION_S,
     DEFAULT_NOTE_STEP,
+    LOOP_DETECT_MODES,
     note_name_to_midi,
     scan_bitwig,
     scan_clap,
@@ -66,7 +69,10 @@ def cmd_sample(args: argparse.Namespace) -> None:
 def cmd_batch(args: argparse.Namespace) -> None:
     configs: list[Path] = []
     for pattern in args.configs:
-        found = sorted(Path(".").glob(pattern))
+        # `glob.glob`, not `Path.glob`: the latter raises NotImplementedError on an
+        # absolute pattern ("Non-relative patterns are unsupported"), so a quoted
+        # `batch "/abs/path/configs/*.yaml"` crashed with a traceback instead of running.
+        found = sorted(Path(m) for m in glob.glob(pattern))
         if not found:
             # treat as literal path
             found = [Path(pattern)]
@@ -164,6 +170,8 @@ def cmd_scan_library(args: argparse.Namespace) -> None:
         note_step=args.note_step,
         note_lo=args.start_note,
         note_hi=args.end_note,
+        audio=args.audio,
+        loop_detect=args.loop_detect,
         debug=args.debug,
     )
     print(
@@ -176,6 +184,8 @@ def cmd_scan_oneshots(args: argparse.Namespace) -> None:
         folder=args.folder.resolve(),
         config_dir=args.config_dir,
         profile=args.profile,
+        audio=args.audio,
+        loop_detect=args.loop_detect,
         debug=args.debug,
     )
     print(
@@ -228,6 +238,7 @@ def cmd_assemble_kits(args: argparse.Namespace) -> None:
         hits_root=args.folder.resolve(),
         config_dir=args.config_dir,
         min_categories=args.min_categories,
+        audio=args.audio,
     )
     print(
         f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
@@ -526,6 +537,31 @@ def main() -> None:
         metavar="NOTE",
         help="Highest note to sample, e.g. C6 or C8 (default: C6)",
     )
+    scan_lib_p.add_argument(
+        "--audio",
+        choices=AUDIO_MODES,
+        default=None,
+        help="""
+            How much of the library's own audio the pipeline may change.
+            'verbatim' (default for melodic material) turns off trim and
+            normalize, which are no-ops on a vendor-mastered file and are
+            the only reason its WAVs get re-encoded instead of copied onto
+            the card byte-for-byte. 'processed' (default for kits, where a
+            pad is expected to hit full scale) restores them.
+        """,
+    )
+    scan_lib_p.add_argument(
+        "--loop-detect",
+        choices=LOOP_DETECT_MODES,
+        default="auto",
+        help="""
+            Where loop points may come from. 'auto' (default) derives them
+            only for a library that ships no `smpl` chunks of its own — a
+            vendor who does ship them has already decided, file by file,
+            what loops, and a file without one is a file they left as a
+            one-shot. 'off' forces authored-only, 'on' forces detection.
+        """,
+    )
 
     # patch-press scan-oneshots "input/Monosounds/Minimoog Synth Oneshots" configs/Monosounds
     scan_oneshots_p = sub.add_parser(
@@ -543,6 +579,31 @@ def main() -> None:
         choices=["pluck", "synth", "pad", "drums"],
         default=None,
         help="Override auto-detected profile (pluck/synth/pad/drums); default: auto",
+    )
+    scan_oneshots_p.add_argument(
+        "--audio",
+        choices=AUDIO_MODES,
+        default=None,
+        help="""
+            How much of the library's own audio the pipeline may change.
+            'verbatim' (default for melodic material) turns off trim and
+            normalize, which are no-ops on a vendor-mastered file and are
+            the only reason its WAVs get re-encoded instead of copied onto
+            the card byte-for-byte. 'processed' (default for kits, where a
+            pad is expected to hit full scale) restores them.
+        """,
+    )
+    scan_oneshots_p.add_argument(
+        "--loop-detect",
+        choices=LOOP_DETECT_MODES,
+        default="auto",
+        help="""
+            Where loop points may come from. 'auto' (default) derives them
+            only for a library that ships no `smpl` chunks of its own — a
+            vendor who does ship them has already decided, file by file,
+            what loops, and a file without one is a file they left as a
+            one-shot. 'off' forces authored-only, 'on' forces detection.
+        """,
     )
 
     # patch-press scan-bitwig "input/Orchestral Tools" configs/OrchestralTools
@@ -604,6 +665,19 @@ def main() -> None:
         default=2,
         metavar="N",
         help="Minimum distinct instrument families a tag must span to become a kit (default: 2)",
+    )
+    assemble_kits_p.add_argument(
+        "--audio",
+        choices=AUDIO_MODES,
+        default=None,
+        help="""
+            How much of the library's own audio the pipeline may change.
+            'verbatim' (default for melodic material) turns off trim and
+            normalize, which are no-ops on a vendor-mastered file and are
+            the only reason its WAVs get re-encoded instead of copied onto
+            the card byte-for-byte. 'processed' (default for kits, where a
+            pad is expected to hit full scale) restores them.
+        """,
     )
 
     # patch-press classify configs/*.yaml

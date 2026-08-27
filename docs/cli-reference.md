@@ -114,6 +114,8 @@ patch-press scan-library <library-root> <config-dir> --type {multisample,kit,dru
 | `--note-step INT` | no | 3 | Only relevant with sparse coverage. |
 | `--start-note NOTE` | no | C1 | Ignore samples below this note. |
 | `--end-note NOTE` | no | C6 | Ignore samples above this note. |
+| `--audio {verbatim,processed}` | no | `verbatim` (melodic) / `processed` (kits) | How much of the library's own audio the pipeline may change. `verbatim` sets `trim: false` + `normalize: none` in the generated configs — both are no-ops on a vendor-mastered file, and either one forces its WAVs to be re-encoded instead of copied onto the card byte-for-byte. `processed` restores them; it is the default for `--type kit`/`drumkit`, where a pad is expected to hit full scale. |
+| `--loop-detect {auto,on,off}` | no | `auto` | Where loop points may come from. `auto` probes the scanned folder: a library that ships `smpl` chunks has already decided file by file what loops, so detection is turned **off** and a file without a chunk ships as a one-shot; a library that ships none gets detection **on**. `off`/`on` force it. |
 
 ---
 
@@ -122,7 +124,7 @@ patch-press scan-library <library-root> <config-dir> --type {multisample,kit,dru
 Turn a folder of single-note oneshot WAVs into one config per file. See [Oneshots](inputs/oneshots.html).
 
 ```
-patch-press scan-oneshots <folder> <config-dir> [--profile P]
+patch-press scan-oneshots <folder> <config-dir> [--profile P] [--audio MODE] [--loop-detect MODE]
 ```
 
 | Argument | Required | Default |
@@ -130,6 +132,8 @@ patch-press scan-oneshots <folder> <config-dir> [--profile P]
 | `folder` | yes | — |
 | `config_dir` | yes | — |
 | `--profile {pluck,synth,pad,drums}` | no | auto |
+| `--audio {verbatim,processed}` | no | `verbatim` — see [`scan-library`](#scan-library) |
+| `--loop-detect {auto,on,off}` | no | `auto` — see [`scan-library`](#scan-library) |
 
 ---
 
@@ -154,7 +158,7 @@ patch-press scan-wavetables <folder> <config-dir> [--archetype A]
 Synthesize kit configs from a bag-of-hits library. See [Kit assembly](inputs/kit-assembly.html).
 
 ```
-patch-press assemble-kits <folder> <config-dir> [--min-categories N]
+patch-press assemble-kits <folder> <config-dir> [--min-categories N] [--audio MODE]
 ```
 
 | Argument | Required | Default |
@@ -162,6 +166,7 @@ patch-press assemble-kits <folder> <config-dir> [--min-categories N]
 | `folder` | yes | — |
 | `config_dir` | yes | — |
 | `--min-categories N` | no | 2 |
+| `--audio {verbatim,processed}` | no | `processed` — see [`scan-library`](#scan-library) |
 
 ---
 

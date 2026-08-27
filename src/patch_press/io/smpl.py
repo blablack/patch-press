@@ -19,33 +19,39 @@ def read_loop_points(path: Path | str) -> tuple[int, int] | None:
     loops — i.e. the author shipped it as a one-shot. Only the first loop is returned;
     multisample instruments use a single sustain loop per note.
     """
+    # Seek the chunk table rather than reading the file: `smpl` is a 60-byte chunk and
+    # the audio next to it can be megabytes, and this runs once per sample of every
+    # library preset (plus once per probe in runner/scan.py:_library_ships_authored_loops).
     try:
-        b = Path(path).read_bytes()
+        with open(path, "rb") as f:
+            header = f.read(12)
+            if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+                return None
+            f.seek(0, 2)
+            n = f.tell()
+            pos = 12
+            while pos + 8 <= n:
+                f.seek(pos)
+                head = f.read(8)
+                if len(head) < 8:
+                    return None
+                chunk_id = head[:4]
+                (chunk_size,) = struct.unpack("<I", head[4:])
+                body = pos + 8
+                if chunk_id == b"smpl":
+                    # smpl header: 9 uint32 (36 bytes); num_loops is the 8th (offset 28).
+                    # Each loop record is 24 bytes; start/end are at record offsets 8 and 12.
+                    chunk = f.read(60)
+                    if len(chunk) < 60:
+                        return None
+                    (num_loops,) = struct.unpack("<I", chunk[28:32])
+                    if num_loops == 0:
+                        return None
+                    start, end = struct.unpack("<II", chunk[44:52])
+                    if end <= start:
+                        return None
+                    return start, end
+                pos = body + chunk_size + (chunk_size & 1)  # chunks are word-aligned
     except OSError:
         return None
-    if len(b) < 12 or b[:4] != b"RIFF" or b[8:12] != b"WAVE":
-        return None
-
-    pos = 12
-    n = len(b)
-    while pos + 8 <= n:
-        chunk_id = b[pos : pos + 4]
-        (chunk_size,) = struct.unpack("<I", b[pos + 4 : pos + 8])
-        body = pos + 8
-        if chunk_id == b"smpl":
-            # smpl header: 9 uint32 (36 bytes); num_loops is the 8th (offset 28).
-            # Each loop record is 24 bytes; start/end are at record offsets 8 and 12.
-            if body + 36 > n:
-                return None
-            (num_loops,) = struct.unpack("<I", b[body + 28 : body + 32])
-            if num_loops == 0:
-                return None
-            rec = body + 36
-            if rec + 24 > n:
-                return None
-            start, end = struct.unpack("<II", b[rec + 8 : rec + 16])
-            if end <= start:
-                return None
-            return start, end
-        pos = body + chunk_size + (chunk_size & 1)  # chunks are word-aligned
     return None

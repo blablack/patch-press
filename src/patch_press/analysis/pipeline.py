@@ -131,13 +131,19 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
 
     # note_off is an index into the captured audio; trimming leading silence shifts it.
     note_off = sample.note_off
+    metadata = sample.metadata
     lead = 0
     if config.trim:
+        frames = audio.num_frames
         lead, trail = trim_bounds(audio)
         if authored_loop is not None:
             # Never trim into the author's loop: keep everything from its start to its end.
             lead = min(lead, authored_loop[0])
             trail = max(trail, authored_loop[1])
+        if lead != 0 or trail != frames:
+            # The audio is no longer what the source file holds, so it can no longer be
+            # copied onto the card verbatim (see _common.py:write_sample_wav).
+            metadata = {**metadata, "audio_verbatim": False}
         audio = AudioBuffer(data=audio.data[:, lead:trail], sample_rate=audio.sample_rate)
         if note_off is not None:
             note_off -= lead
@@ -158,6 +164,12 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         loop_points = (authored_loop[0] - lead, authored_loop[1] - lead)
         analysis["loop_source"] = "authored_smpl"
         analysis["loop_quality"] = None
+    elif config.loop and not config.loop_detect:
+        # Detection disabled and the source carries no loop of its own: the author shipped
+        # this file as a one-shot, so it ships as one. Nothing is derived, nothing is faded
+        # into the audio — the whole point of `loop_detect: false` (see AnalysisConfig).
+        analysis["loop_quality"] = None
+        analysis["loop_warning"] = "no_authored_loop"
     elif config.loop:
         loop_cands = find_loop_candidates(audio, config.loop_quality_threshold, config.tempo_bpm, envelope=env, midi_note=sample.note)
         best_quality = loop_cands[0][1] if loop_cands else 0.0
@@ -211,7 +223,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         audio=audio,
         loop_points=loop_points,
         analysis=analysis,
-        metadata=sample.metadata,
+        metadata=metadata,
     )
 
 
@@ -254,7 +266,12 @@ def _bake_sample_loop(sample: Sample, crossfade_ms: float | None, bake: bool = T
         return dataclasses.replace(sample, analysis=analysis)
     start, end = sample.loop_points
     baked = bake_loop_crossfade(sample.audio, start, end, ms)
-    return dataclasses.replace(sample, audio=baked, analysis=analysis)
+    return dataclasses.replace(
+        sample,
+        audio=baked,
+        analysis=analysis,
+        metadata={**sample.metadata, "audio_verbatim": False},
+    )
 
 
 def _map_samples(fn, samples, workers: int, level: int, desc: str) -> list[Sample]:
@@ -315,7 +332,10 @@ def analyze_sampleset(
     # longer strip loops when the set votes "Pluck" — that override silently discarded loops a
     # loop:true config asked for. Instead just warn so the user can set profile: pluck if the
     # preset really shouldn't loop.
-    if sound_type == "Pluck" and config.loop:
+    # Only worth saying when a loop could actually have been derived: with `loop_detect`
+    # off the loops are whatever the author shipped, and "set profile: pluck" is advice
+    # about a decision the pipeline is no longer making.
+    if sound_type == "Pluck" and config.loop and config.loop_detect:
         n_pluck = sum(1 for s in analyzed if s.analysis.get("classification") == "pluck")
         log.warning(
             f"{n_pluck}/{len(analyzed)} samples classify as pluck but loop is enabled — "
@@ -338,11 +358,19 @@ def analyze_sampleset(
                 f"{_note_name(s.note)}({s.analysis.get('loop_quality') or 0:.2f})"
                 for s in analyzed if s.loop_points is None
             )
-            log.warning(
-                f"Loop detection partial ({samples_with_loop}/{len(analyzed)} samples) — keeping loops where found."
-            )
-            log.warning(f"  Found:   {' '.join(found)}")
-            log.warning(f"  Missing: {' '.join(missing)}")
+            if config.loop_detect:
+                log.warning(
+                    f"Loop detection partial ({samples_with_loop}/{len(analyzed)} samples) — keeping loops where found."
+                )
+                log.warning(f"  Found:   {' '.join(found)}")
+                log.warning(f"  Missing: {' '.join(missing)}")
+            else:
+                # Not a partial result: the author looped these notes and not those. Worth
+                # seeing, not worth a warning.
+                log.info(
+                    f"Authored loops on {samples_with_loop}/{len(analyzed)} samples "
+                    f"(the rest ship as one-shots, as the source library has them)."
+                )
 
     if sset.category == Category.DRUM and config.classify_drums:
         analyzed = [

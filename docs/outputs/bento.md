@@ -108,22 +108,68 @@ rsync -a --exclude patchindex.xml output/Bento/ /media/BENTO/
 |---|---|
 | Multisample (synth/pad/pluck) | A `multisamtrack`: one `saminst` instrument cell plus one `samasst` per note. Each sample keeps its own root note and gets a keyzone **centred** on it — every boundary sits midway between two neighbouring roots, so a key is repitched by at most half the capture step in either direction, and the outermost zones stretch to 0 and 127 so the whole keyboard sounds. Loop points ship as frame indices. Velocity and round-robins collapse to one sample per note (velocity closest to 100, then lowest RR). |
 | Drumkit | A `samtrack` of **16 pads**, each pad its own `saminst`/`samasst` pair addressed by `celldisppos`, one-shot triggered and unlooped. Pads land in the canonical kick → snare → hats → clap/perc → cymbals → toms → congas order, the same order the Deluge kit export uses. |
-| Wavetable | **Not supported** — see below. The config exports fine with `--format deluge` or `--format pti`. |
+| Wavetable | A `wttrack` under a third root, `UserPatches/Wavetable/`. The table WAV ships in the patch folder and the oscillator names it — see below. |
 
-Samples ship exactly as the pipeline produced them: no resampling, no downmix, no bit-depth change. Factory patches contain mono and stereo, 16- and 24-bit, 44.1 and 48 kHz WAVs in every combination, so there is nothing to convert to.
+Samples ship exactly as the pipeline produced them: no resampling, no downmix, no bit-depth change. Factory patches contain mono and stereo, 16- and 24-bit, 44.1 and 48 kHz WAVs in every combination, so there is nothing to convert to. A library sample the analysis never modified goes further and is copied byte-for-byte from the vendor's own file — see [Shipping the vendor's own file](../inputs/sample-libraries.html#shipping-the-vendors-own-file).
 
-## Why wavetables aren't exported
+## Wavetables
 
-The Bento's wavetable engine (`wttrack`) picks its table with a `wavesel` attribute, and `wavesel` is a **0-based index into a fixed list of 103 table names compiled into the firmware** — not a reference to the file the patch also names. Across all 130 wavetable cells in the factory bank that index matches the referenced filename exactly, with no exceptions, so the oscillator is choosing from a closed set.
+A wavetable config exports to a `wttrack` patch under `UserPatches/Wavetable/`, built
+from the same archetype analysis that drives the Deluge export
+([Wavetables](../inputs/wavetables.html)). The table WAV sits in the patch folder and
+the oscillator cell names it, exactly the way a sample cell names its sample:
 
-A user table has no index to claim. A patch built from a patch-press wavetable would name a WAV the oscillator cannot select, and would silently play a factory table instead. So `--format bento` raises on a wavetable config rather than shipping something that looks right and sounds wrong:
-
+```xml
+<cell type="wavetable">
+  <params pitch="-60" level="1000" wavesel="0" wavepos="0" samlen="0" filename="111.WAV"/>
+  <modsource dest="wavepos" src="lfo1" slot="0" amount="450"/>
+</cell>
 ```
-ERROR  Wavetable_27: the Bento can't play user wavetables. Its wavetable oscillator
-picks a table by `wavesel`, an index into the 103 tables built into the firmware…
-```
 
-In a `batch` run that's one error line per wavetable config; everything else in the batch still builds.
+**The table must be mono.** The firmware rejects anything else outright with
+`Wavetables must be mono WAVs.` — a stereo source is downmixed and truncated to whole
+2048-sample windows on the way out, the same narrowing the Deluge needs. A mono file is
+copied byte-for-byte.
+
+### What `wavesel` is, and why it isn't the table
+
+The firmware carries a 103-entry catalogue of stock table names — display names at
+`0x660f8`, filenames at `0x664f0` — and `wavesel` is a 0-based index into it. That
+index agrees with the cell's own `filename` in all 130 factory wavetable cells, which
+is what makes the catalogue easy to mistake for the source of the audio.
+
+It isn't. The firmware holds the *names*, not the samples: 103 tables at ~3 MB each is
+roughly 300 MB against a 1.4 MB binary, and there is no wavetable library folder
+anywhere on the card. Every factory patch ships its own byte-identical copy of each
+table it uses — `AyEeAyeOh.wav` appears three times on the card, once per patch that
+plays it. So even a factory patch can only be reading the WAV beside its own
+`patch.xml`, and `filename` is what selects the audio. The firmware's load path is
+file-based to match: `Double-tap to load WAV`, `No WAV`, `Invalid Wavetable`,
+`Wavetables must be mono WAVs.`
+
+A user table therefore needs no catalogue entry. `wavesel` is written as `0` — a valid
+index (entry 0 is `AEAHOHOOo.wav`), so the picker always has something in range to
+display, rather than a sentinel that could trip `Invalid Wavetable` and cost you the
+patch. It names a table the patch does not play.
+
+### The patch around the table
+
+The cell order is the factory bank's and does not vary: two wavetable cells, an analog
+osc, two filters, two envelopes, two LFOs, the modulation sequencer, the part
+parameters, then the effects. All 66 factory wavetable patches carry all of them, so
+all of them are written even where this patch leaves them neutral.
+
+- **Both wavetable cells play the one table**, detuned ±6 cents with the position LFO
+  inverted on the second. That is what the 37 single-table factory patches do
+  (`Bigbrute` runs its two cells 11 cents apart with `wavepos` modulated +481/−503).
+- **The analog oscillator is silenced** (`level="0"`). The preset is the table.
+- **Envelope 1 is the amp envelope**, implicitly — it needs no `modsource`, so the
+  archetype's ADSR goes there and envelope 2 stays neutral and unrouted, matching what
+  the Deluge export does with the same analysis.
+- **LFO 1 sweeps the table.** The analysis calls that modulator `lfo2` because that is
+  the LFO the Deluge uses for it; on the Bento the factory bank drives `wavepos` from
+  LFO 1 in 93 cells against LFO 2's 13, so it lands on LFO 1 here.
+- `wavepos` is a scan position over the table on a 0–255 scale, not a window index.
 
 ## Caveats
 
@@ -161,4 +207,4 @@ Nothing here is guessed from a wiki. The mapping was read off a real card's fact
 
 - The `UserPatches\<Type>` roots, the cell and attribute names, and the `Wavetables must be mono WAVs` constraint all appear verbatim in the firmware.
 - `samlen`, `loopstart` and `loopend` are frame indices — verified against the actual `data` chunk sizes of factory samples, not inferred.
-- Attribute names, their order, and the cell sequence in a generated patch are checked to match the factory `SampInst`/`OneShots` patches exactly.
+- Attribute names, their order, and the cell sequence in a generated patch are checked to match the factory `SampInst`/`OneShots`/`Wavetable` patches exactly.

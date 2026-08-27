@@ -67,8 +67,14 @@ def _make_sample(note: int, rr: int, wav: Path) -> Sample:
     When the file carries loop points, we trust them (loop_points set + an `authored_loop`
     flag) so the pipeline ships the author's exact loop with no re-detection and no
     crossfade. Frames are raw-file indices; the pipeline rebases them if it trims.
+
+    `audio_verbatim` marks that the decoded audio is still exactly what is in the file on
+    disk. Every stage that alters it clears the flag (analysis trim, loop crossfade bake,
+    normalize gain), so an exporter that reaches one still carrying it can put the vendor's
+    own file on the card byte-for-byte instead of re-encoding it — see
+    io/exporters/_common.py:write_sample_wav.
     """
-    metadata = {"source_file": str(wav)}
+    metadata = {"source_file": str(wav), "audio_verbatim": True}
     loop = read_loop_points(wav)
     if loop is not None:
         metadata["authored_loop"] = True
@@ -144,7 +150,10 @@ class LibraryAdapter:
         if path.is_file():
             return self._load_single(name or path.stem, path, progress)
         sset_name = name or path.name
-        wavs = sorted(path.glob("*.wav"))
+        # case_sensitive=False throughout: vendors ship `.WAV` as often as `.wav` (Liam
+        # Wavetables is all-uppercase), and on Linux a case-sensitive glob answers "no
+        # WAVs here" instead of failing — a whole library silently produces no presets.
+        wavs = sorted(path.glob("*.wav", case_sensitive=False))
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
         if wavs:
             if self._config.drumkit:
@@ -166,7 +175,7 @@ class LibraryAdapter:
             return len(self._config.files)
         if path.is_file():
             return 1
-        wavs = sorted(path.glob("*.wav"))
+        wavs = sorted(path.glob("*.wav", case_sensitive=False))
         if wavs:
             if self._config.drumkit:
                 return len(wavs)
@@ -179,7 +188,7 @@ class LibraryAdapter:
                     total += 1
             return total
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
-        return sum(min(len(list(d.glob("*.wav"))), max_round_robins) for d in subdirs)
+        return sum(min(len(list(d.glob("*.wav", case_sensitive=False))), max_round_robins) for d in subdirs)
 
     def _load_multisample(
         self,
@@ -245,7 +254,7 @@ class LibraryAdapter:
             samples.append(Sample(
                 note=i, velocity=100, round_robin=1,
                 audio=AudioBuffer.from_file(wav),
-                metadata={"source_file": str(wav), "instrument": wav.stem},
+                metadata={"source_file": str(wav), "instrument": wav.stem, "audio_verbatim": True},
             ))
             if progress is not None:
                 progress.update(1)
@@ -275,7 +284,7 @@ class LibraryAdapter:
         """
         pads: list[tuple[tuple[int, str], str, list[Path]]] = []
         for subdir in subdirs:
-            wavs = sorted(subdir.glob("*.wav"))
+            wavs = sorted(subdir.glob("*.wav", case_sensitive=False))
             by_category: dict[str, list[Path]] = defaultdict(list)
             for wav in wavs:
                 by_category[classify_instrument(wav.stem)].append(wav)
@@ -326,7 +335,7 @@ class LibraryAdapter:
                     samples.append(Sample(
                         note=i, velocity=100, round_robin=rr,
                         audio=AudioBuffer.from_file(wav),
-                        metadata={"source_file": str(wav), "instrument": label},
+                        metadata={"source_file": str(wav), "instrument": label, "audio_verbatim": True},
                     ))
                     if progress is not None:
                         progress.update(1)
@@ -338,12 +347,12 @@ class LibraryAdapter:
                     # ignore it rather than folding it onto a wrong MIDI slot.
                     continue
                 note = result[0]
-                wavs = sorted(subdir.glob("*.wav"))
+                wavs = sorted(subdir.glob("*.wav", case_sensitive=False))
                 for rr, wav in enumerate(wavs[:max_round_robins], start=1):
                     samples.append(Sample(
                         note=note, velocity=100, round_robin=rr,
                         audio=AudioBuffer.from_file(wav),
-                        metadata={"source_file": str(wav), "instrument": subdir.name},
+                        metadata={"source_file": str(wav), "instrument": subdir.name, "audio_verbatim": True},
                     ))
                     if progress is not None:
                         progress.update(1)

@@ -124,6 +124,7 @@ def load_config(path: Path) -> RunConfig:
         pitch_verify=ana.get("pitch_verify", True),
         pitch_tolerance_cents=ana.get("pitch_tolerance_cents", 50.0),
         loop=ana.get("loop", False),
+        loop_detect=ana.get("loop_detect", True),
         loop_use_tempo=ana.get("loop_use_tempo", False),
         loop_quality_threshold=ana.get("loop_quality_threshold", 0.8),
         loop_crossfade_ms=ana.get("loop_crossfade_ms"),  # None → adaptive (per-note period × seam)
