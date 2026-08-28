@@ -62,6 +62,7 @@ from ._common import (
     write_wavetable_wav,
 )
 from .bento_index import derive_tags, update_index
+from .bento_preview import PREVIEW_NAME, write_preview
 
 log = logging.getLogger(__name__)
 
@@ -459,6 +460,33 @@ def _select_pads(by_note: dict[int, list[Sample]], limit: int) -> list[int]:
     return sorted(kept)
 
 
+def _kit_pads(sset: SampleSet, name: str) -> tuple[dict[int, list[Sample]], list[int]]:
+    """The pads this kit ships, in canonical order, thinned to the device's 16 slots.
+
+    Pulled out of _build_kit because the browser preview has to audition the pads the
+    patch actually ended up with: a kit that arrived with more than 16 has already lost
+    some here, and a preview built from the unthinned set would play hits that aren't on
+    the card.
+    """
+    by_note: dict[int, list[Sample]] = defaultdict(list)
+    for s in sset.samples:
+        by_note[s.note].append(s)
+    for note in by_note:
+        by_note[note].sort(key=lambda s: s.round_robin)
+
+    pads = _select_pads(by_note, _KIT_PADS)
+    if len(pads) < len(by_note):
+        dropped = [
+            by_note[n][0].metadata.get("instrument", f"note{n:03d}")
+            for n in sorted(by_note) if n not in set(pads)
+        ]
+        log.warning(
+            "%s: the Bento has %d pads, kit has %d — dropping %s",
+            name, _KIT_PADS, len(by_note), ", ".join(dropped),
+        )
+    return by_note, pads
+
+
 def _tag_name(sset: SampleSet, name: str) -> str:
     """The preset name the tag index reads, with a wavetable's archetype appended.
 
@@ -534,10 +562,17 @@ class BentoExporter:
         patch_dir = path.parent.joinpath(_PATCH_ROOT, kind, flat)
         wav_paths = _write_wavs(sset, patch_dir)
 
+        # Each branch also settles what its browser preview auditions: the kit's
+        # post-thinning pad list, or the mono table copy the wavetable patch loads.
+        preview: dict = {}
         if sset.category == Category.DRUM:
-            doc = self._build_kit(sset, wav_paths, config.name)
+            by_note, pads = _kit_pads(sset, config.name)
+            doc = self._build_kit(wav_paths, by_note, pads)
+            preview["kit_samples"] = [by_note[n][0] for n in pads]
         elif sset.category == Category.WAVETABLE:
             doc = self._build_wavetable(sset, wav_paths)
+            t = sset.samples[0]
+            preview["table_wav"] = wav_paths[(t.note, t.velocity, t.round_robin)]
         else:
             doc = self._build_multisample(sset, wav_paths, config.name)
 
@@ -547,6 +582,15 @@ class BentoExporter:
         xml_path.write_bytes(
             b'<?xml version="1.0" encoding="UTF-8"?>\n' + etree.tostring(doc, pretty_print=True)
         )
+
+        # The browser only plays a preview that is already on the card: the device
+        # records one when *it* saves a patch, which a folder written here never goes
+        # through. Best-effort like the index below — a patch with no preview is silent
+        # in the browser but browses and loads exactly as before.
+        try:
+            write_preview(sset, patch_dir, **preview)
+        except Exception as exc:  # noqa: BLE001 - a preview must never fail an export
+            log.warning("%s: could not write %s (%s)", config.name, PREVIEW_NAME, exc)
 
         # The browser's tag filter is the only way to narrow a flat card, and the index
         # it reads is an ordinary file, so the build fills it in. Best-effort: a preset
@@ -730,27 +774,10 @@ class BentoExporter:
     # ------------------------------------------------------------------
     def _build_kit(
         self,
-        sset: SampleSet,
         wav_paths: dict[tuple[int, int, int], Path],
-        name: str,
+        by_note: dict[int, list[Sample]],
+        pads: list[int],
     ):
-        by_note: dict[int, list[Sample]] = defaultdict(list)
-        for s in sset.samples:
-            by_note[s.note].append(s)
-        for note in by_note:
-            by_note[note].sort(key=lambda s: s.round_robin)
-
-        pads = _select_pads(by_note, _KIT_PADS)
-        if len(pads) < len(by_note):
-            dropped = [
-                by_note[n][0].metadata.get("instrument", f"note{n:03d}")
-                for n in sorted(by_note) if n not in set(pads)
-            ]
-            log.warning(
-                "%s: the Bento has %d pads, kit has %d — dropping %s",
-                name, _KIT_PADS, len(by_note), ", ".join(dropped),
-            )
-
         doc, track = _document("samtrack", outputbus=False)
         for slot, note in enumerate(pads):
             s = by_note[note][0]  # a pad plays one sample: no round-robin or velocity engine

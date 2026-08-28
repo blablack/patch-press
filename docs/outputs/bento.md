@@ -27,10 +27,12 @@ Unlike the `.pti` export, the Bento has real multisample keyzones, so a melodic 
     ├── SampInst/                     ← melodic multisample patches
     │   └── SFM VS Keys Pads - Polaris Space Delay Soft D2/
     │       ├── patch.xml
+    │       ├── preview.wav           ← what the browser plays when you audition it
     │       └── *.wav
     └── OneShots/                     ← drum kits
         └── SFM VDM - 14 DDD1 Kit/
             ├── patch.xml
+            ├── preview.wav
             └── *.wav
 ```
 
@@ -199,7 +201,55 @@ The exporter declares this with `bakes_loop_crossfade()`, the same optional-clas
 
 **One thing is still baked.** A Bitwig `.multisample` zone carries its own `fade` length, and `io/adapters/bitwig.py` applies it while slicing — before any exporter is involved, because an adapter doesn't know the output format. That one is the source file's own instruction rather than a patch-press decision, so it is reproduced rather than deferred to the device.
 
-**No `preview.wav`.** Factory patches carry one for the browser. It isn't written — that's the device's own to generate — and presets browse and load fine without it.
+## The browser preview
+
+Every patch folder gets a `preview.wav`: the clip the patch browser plays when you tap **Preview** to audition a patch without loading it.
+
+**The device makes these, but only on its own save path.** Saving or importing a patch *on the hardware* triggers a note and records the output in real time — the 1.3 release notes flag it as a known issue ("you are still hearing the sound triggered to create the preview file"). A patch folder written by a build tool never goes through that path, so it never gets one, and its row in the browser is silent. All 236 factory patches ship a preview; nothing this exporter wrote had one until it started writing them. Re-saving a few thousand patches by hand on the device is not a route, so `--format bento` renders the clip offline instead.
+
+**The format is copied from the factory bank, not guessed.** It is invariant across all 236 factory previews, and generated files match it byte-for-byte in the header and to the byte in total size:
+
+- RIFF PCM, **stereo, 48 kHz, 24-bit** — no exceptions anywhere in the factory bank.
+- Chunks `fmt `(16) + `JUNK`(460 zero bytes) + `data`, which puts the audio payload on byte 512. That sector alignment is the fingerprint of the device's own streaming recorder: factory *sample* WAVs are plain `fmt`+`data` at `0x2c`, so the previews demonstrably come from a different writer. The padding does nothing for playback, but matching the layout removes a variable.
+- Exactly **4.000 s** for the three roots this exporter writes. (The factory bank uses 10 s for `Slicer` and 16 s for `Loops`, neither of which patch-press produces.)
+- Referenced by nothing — not `patch.xml`, not `patchindex.xml`. The loader finds it by name, beside `patch.xml`.
+
+**What's in the clip follows what the factory previews contain**, measured the same way. A factory multisample or wavetable preview is one note held for the whole four seconds (a single onset, sound from 0.00 to 4.00); a factory kit preview is a handful of pad hits (3 to 13 across the 26 kits). So:
+
+| Patch | Preview |
+|---|---|
+| `SampInst` | the sample nearest middle C, at its own root pitch, sustained to 4 s through its own loop points |
+| `OneShots` | the kit's pads struck in order, spread evenly across the 4 s, tails ringing on under each other |
+| `Wavetable` | a synthesised approximation of the patch (see below) |
+
+A multisample whose chosen sample has no loop simply ends where it ends and the clip runs out into silence — which is what the device does with a one-shot too. A kit preview auditions the pads the patch *shipped*, after the 16-pad thinning, so it never plays a hit that isn't on the card.
+
+**A wavetable preview is an approximation, and deliberately so.** The other two are built from the very audio in the patch folder, so they are what the device will play. A wavetable's sound comes from the device's own oscillator, and there is nothing to copy — so `bento_preview.py` synthesises it from the same `WavetableAnalysis` the patch was written from, mirroring `_build_wavetable`: two oscillators detuned ±6 cents reading the one table, position swept by an LFO inverted on the second voice, one lowpass, one ADSR. Verified to land on middle C (261.8 Hz measured) with the table position genuinely moving. It is meant to be recognisable in a browser list, not to match the hardware sample for sample. The fraction-to-Hz/seconds mappings that requires (`_ENV_MAX_S`, `_LFO_HZ`, `_CUTOFF_HZ`) are plausible ranges, **not derived** — the Bento's parameter scales are unitless 0–1000 integers in the firmware, so there is nothing to read them off. Same status as the archetype thresholds in `analysis/wavetable.py`: tune by ear.
+
+**Previews are levelled; the factory ones are not.** Factory clips peak anywhere from 0.43 to 1.0 because they are recordings of a device whose output gain is already set. A corpus of thousands of library and rendered presets has no such common reference, and a preview too quiet to hear does not do its job, so each one is peak-normalised to 0.89.
+
+**A failed preview never fails an export.** It is best-effort, like the tag index: a patch with no `preview.wav` is silent in the browser but browses and loads exactly as before — which is precisely the state every patch built before this existed is in.
+
+**Cost.** 1,152,512 bytes per patch, always — the format is fixed-length, so a mono kit costs the same as a stereo pad. Around 3.9 GB across a ~3,500-preset card.
+
+**Patches built before this existed can be backfilled without rebuilding them.** A resumed build won't add previews on its own — `run_batch` skips a preset when any of its `expected_outputs` exists, and `patch.xml` still does — and `batch --no-skip` would re-render every VST/CLAP preset just to gain a 4-second clip. It isn't necessary: a patch folder already contains everything a preview needs. The WAVs sit next to `patch.xml`, and `patch.xml` carries the loop points, the root notes, the pad order and the wavetable's whole oscillator/filter/envelope setup. So `debug_scripts/backfill_bento_previews.py` walks an existing tree — a build directory or a card — reconstructs just enough of a `SampleSet` per patch, and calls the same `write_preview` the exporter calls:
+
+```
+.venv/bin/python debug_scripts/backfill_bento_previews.py output/Bento --jobs 8
+.venv/bin/python debug_scripts/backfill_bento_previews.py /run/media/you/BENTO --jobs 8
+```
+
+It skips patches that already have one (`--force` to overwrite, `--dry-run` to just count), and only loads the WAV it actually needs — a 100-note multisample reads one file, not a hundred.
+
+How close is a backfilled preview to a rebuilt one? Measured against a fresh export of the same presets:
+
+| Type | Result |
+|---|---|
+| `SampInst` | **bit-identical** |
+| `OneShots` | differs below **−80 dBFS** peak (−92 dB RMS) — the shipped WAV is 16-bit, the exporter mixed from the float in memory |
+| `Wavetable` | same timbre and level (spectra within 1.2%, centroids equal to the Hz, RMS equal to 0.00 dB), different LFO phase — the sweep rate is read back from the patch's quantised 0–1000 integer, and a hair of rate difference is seconds of phase by the end of the clip |
+
+None of that is audible; the kit case is below the noise floor of its own source file.
 
 ## What the format is based on
 
@@ -208,3 +258,4 @@ Nothing here is guessed from a wiki. The mapping was read off a real card's fact
 - The `UserPatches\<Type>` roots, the cell and attribute names, and the `Wavetables must be mono WAVs` constraint all appear verbatim in the firmware.
 - `samlen`, `loopstart` and `loopend` are frame indices — verified against the actual `data` chunk sizes of factory samples, not inferred.
 - Attribute names, their order, and the cell sequence in a generated patch are checked to match the factory `SampInst`/`OneShots`/`Wavetable` patches exactly.
+- `preview.wav`'s audio format, chunk layout and duration were measured across all 236 factory previews (identical in every one), and its role confirmed against 1010music's own documentation — the Quick Start Guide ships previews as content ("add the files needed to support Patch Previewing"), and the 1.3 release notes describe the device recording one at save/import time.
