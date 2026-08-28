@@ -26,7 +26,7 @@ llvmlite==0.49.0
     # via numba
 lxml==6.1.2
     # via patch-press (pyproject.toml)
-msgpack==1.2.1
+msgpack==1.2.2
     # via librosa
 narwhals==2.25.0
     # via scikit-learn
@@ -46,7 +46,7 @@ packaging==26.3
     #   pooch
 patch-render==0.3.2
     # via patch-press (pyproject.toml)
-platformdirs==4.11.4
+platformdirs==4.11.5
     # via pooch
 pooch==1.9.0
     # via librosa
