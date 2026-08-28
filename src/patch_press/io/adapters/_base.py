@@ -150,6 +150,15 @@ class PluginAdapterBase(Generic[_ConfigT]):
                             capture.tempo_bpm,
                             capture.sample_rate,
                         )
+                        if capture.mono:
+                            # The scan measured this preset's two channels as the same
+                            # signal (analysis/channels.py). Fold them here, at the top of
+                            # the pipeline, rather than at each exporter: the buffer stays
+                            # the (2, N) every analysis stage expects, but both channels are
+                            # now literally equal, so the .pti writer's own exact-equality
+                            # mono test agrees with the flag instead of being a second,
+                            # differently-tuned opinion.
+                            audio = AudioBuffer(data=audio.to_mono(), sample_rate=audio.sample_rate)
                         samples.append(
                             Sample(
                                 note=note,
@@ -157,6 +166,7 @@ class PluginAdapterBase(Generic[_ConfigT]):
                                 round_robin=rr,
                                 audio=audio,
                                 note_off=int(round(capture.duration_s * capture.sample_rate)),
+                                metadata={"mono": True} if capture.mono else {},
                             )
                         )
                         pbar.update(1)

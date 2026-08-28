@@ -95,6 +95,7 @@ Controls how VST/CLAP plugins are played — how many notes, how loudly, for how
 | `release_tail_s` | `float` | `2.0` | Post note-off recording time. Pad uses `5`. |
 | `tempo_bpm` | `float` | `120.0` | Tempo the plugin is told; also used by loop / envelope BPM-snap detection. |
 | `sample_rate` | `int` | `48000` | 44100 / 48000 / 96000. |
+| `mono` | `bool` | `false` | Capture one channel instead of two. Set by the scan when the preset renders the same signal to both channels (see [CLAP plugins](inputs/clap-plugins.html#mono-presets-are-captured-in-mono)); flip it to `false` to force stereo. |
 
 ---
 

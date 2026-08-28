@@ -81,6 +81,11 @@ class ProbeResult:
     sustains: bool
     confidence: str  # "high" | "medium" | "low"
     flags: list[str] = field(default_factory=list)
+    # Side-to-mid level of the render, in dB (analysis/channels.py). Not measured by
+    # probe() — the scan fills it in from the same renders, alongside the flags it
+    # appends, and it decides whether the capture ships one channel or two. None when
+    # nothing measured it.
+    side_db: float | None = None
 
 
 def _rms_envelope(mono: np.ndarray) -> np.ndarray:

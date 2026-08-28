@@ -60,13 +60,20 @@ def write_sample_wav(sample: Sample, dest: Path) -> None:
     16/24-bit mono or stereo natively.
 
     Anything else — a rendered VST/CLAP capture, or a library sample the analysis genuinely
-    had to modify — is encoded from the audio in memory, exactly as before.
+    had to modify — is encoded from the audio in memory, exactly as before, at one channel
+    or two: a capture the scan measured as mono (`capture.mono`, see analysis/channels.py)
+    arrives here already folded, and writing its duplicate channel out would double the
+    file on the card for a signal the plugin never made stereo.
     """
     src = sample.metadata.get("source_file")
     if sample.metadata.get("audio_verbatim") and src and Path(src).suffix.lower() == ".wav":
         shutil.copy2(src, dest)
         return
-    sf.write(str(dest), sample.audio.data.T, sample.audio.sample_rate)
+    data = sample.audio.data
+    # Channel 0, not the mean: the adapter folded both channels to the same signal, so
+    # they are equal by construction and averaging would only add rounding.
+    frames = data[0] if sample.metadata.get("mono") else data.T
+    sf.write(str(dest), frames, sample.audio.sample_rate)
 
 
 def sample_wav_name(sample: Sample, tempo_bpm: float, used_names: set[str]) -> str:

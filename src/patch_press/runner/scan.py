@@ -14,6 +14,7 @@ from ..progress import suppressed_plugin_output
 
 log = logging.getLogger(__name__)
 
+from ..analysis.channels import format_side_db, is_mono, side_level_db
 from ..analysis.drumkit import classify_instrument
 from ..analysis.drumkit_assemble import assemble_kit, discover_flavors, walk_hit_tree
 from ..analysis.pipeline import classify_sampleset
@@ -236,6 +237,14 @@ def _config_yaml(
     meta += f" sustains={'yes' if result.sustains else 'no'}"
     meta += f" release={result.release_tail_s:.1f}s"
 
+    # Channel count, decided once here from the probe renders. Written as a plain
+    # capture flag (plus the measurement it came from) so it reads and hand-edits like
+    # every other capture setting — flip it to `false` and the next build ships stereo.
+    mono = result.side_db is not None and is_mono(result.side_db)
+    if result.side_db is not None:
+        meta += f" channels={'mono' if mono else 'stereo'} (side {format_side_db(result.side_db)})"
+    mono_line = "  mono: true\n" if mono else ""
+
     # Drums keep the profile's full-kit range; start/end-note is a melodic concept.
     note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
@@ -254,6 +263,7 @@ def _config_yaml(
         f"{note_step_line}"
         f"  duration_s: {result.duration_s}\n"
         f"  release_tail_s: {result.release_tail_s}\n"
+        f"{mono_line}"
         f"\n"
         f"output:\n"
         f'  name: "{preset_name}"\n'
@@ -314,6 +324,13 @@ def _probe_and_classify_preset(
     short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, total_s, sample_rate=sample_rate)
     long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, total_s, sample_rate=sample_rate)
 
+    # Mono or stereo, measured on the renders this probe already pays for (the classify
+    # notes below join in when they get rendered). The widest side level of the lot wins:
+    # a patch whose stereo lives in a delay or reverb tail can look mono at the note that
+    # happens to land on the dry side of it, and one mis-measured note would flatten the
+    # whole preset. See analysis/channels.py.
+    side_dbs = [side_level_db(long_audio)]
+
     sustains = classify_sustain_type(short_audio, long_audio, note_off_s=long_hold_s)
     result = probe(long_audio, long_hold_s, sustains_hint=sustains)
     if result.sustains:
@@ -340,6 +357,7 @@ def _probe_and_classify_preset(
             )
             for n in _CLASSIFY_NOTES
         ]
+        side_dbs.extend(side_level_db(cs.audio) for cs in classify_samples)
         classify_sset = SampleSet(name=preset_name, category=Category.SYNTH, samples=classify_samples)
         sound_type = classify_sampleset(classify_sset, tempo_bpm=tempo_bpm, workers=1)
         tqdm.write(f"  {preset_name}: {sound_type}")
@@ -353,7 +371,10 @@ def _probe_and_classify_preset(
                 result.flags.append(f"evolving timbre (loop seam {seam:.0f}) — looping disabled")
                 tqdm.write(f"  {preset_name}: non-repeatable timbre (seam {seam:.0f}) → no loop")
 
-    return result, preset_profile, long_audio
+    side_db = max(side_dbs)
+    if is_mono(side_db):
+        tqdm.write(f"  {preset_name}: mono ({format_side_db(side_db)}) → single-channel capture")
+    return replace(result, side_db=side_db), preset_profile, long_audio
 
 
 def scan_from_probe(

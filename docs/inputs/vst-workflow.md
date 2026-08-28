@@ -50,7 +50,8 @@ For each YAML in the probe directory, `scan-from-probe`:
    - **synth** — flat, steady sustain
    - **pad** — sustained but evolving (LFO, filter sweep, chorus movement)
 4. Picks the matching profile.
-5. Writes `configs/Dexed/BRASS_1.yaml` with `source.raw_state` baked in.
+5. Measures whether the preset renders in stereo at all — one that fills both channels with the same signal is captured as mono (`capture.mono: true`, see [CLAP plugins](clap-plugins.html#mono-presets-are-captured-in-mono) for the measurement and the threshold).
+6. Writes `configs/Dexed/BRASS_1.yaml` with `source.raw_state` baked in.
 
 You get one config per preset. No further probing happens later — the full render only runs during `batch`.
 

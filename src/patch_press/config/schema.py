@@ -88,6 +88,14 @@ class CaptureConfig:
     release_tail_s: float = 2.0
     tempo_bpm: float = 120.0
     sample_rate: int = 48000
+    # Capture this VST/CLAP preset as one channel. A plugin always returns a stereo
+    # buffer, but a patch with no unison spread and no stereo effect writes the same
+    # signal to both channels — shipping that as a stereo WAV doubles the file and the
+    # sampler's voice memory for nothing. The scan commands measure the render's side
+    # level (analysis/channels.py) and set this; it is never inferred at build time, so
+    # a hand-edit here is final. Library sources ignore it — their files already are
+    # whatever the vendor shipped.
+    mono: bool = False
 
 
 @dataclass
