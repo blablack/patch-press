@@ -24,7 +24,7 @@ import fcntl
 import logging
 import re
 from pathlib import Path
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 from ...model.sample import Category
 
@@ -129,11 +129,20 @@ def _parse(raw: bytes) -> dict[str, list[str]]:
     Deliberately regex-based rather than a real XML parse: this file is co-owned with
     the device, and the only thing we need out of it is which paths are already
     spoken for, so a stray attribute or a hand edit shouldn't cost the user their tags.
+
+    But it MUST undo what `_render` did. `update_index` is a read-modify-write called
+    once per preset, so parse and render sit in a loop with each other: a `_parse` that
+    handed back `Long &amp; Saturated` where the folder is `Long & Saturated` would let
+    `_render` escape it again on the next preset, and again on the one after — a name
+    with `&` grows one `amp;` per preset in the build. That is not hypothetical; it is
+    what the first Bento build did, turning 16 preset names into 168 KB of `&amp;` and
+    leaving every one of them with a path the device cannot match to any folder, so
+    they shipped untagged.
     """
     entries: dict[str, list[str]] = {}
     for block in re.findall(rb"<patch\s+path=\"(.*?)\"\s*>(.*?)</patch>", raw, re.S):
-        path = block[0].decode("utf-8", "replace")
-        entries[path] = [t.decode("utf-8", "replace")
+        path = unescape(block[0].decode("utf-8", "replace"), {"&quot;": chr(34)})
+        entries[path] = [unescape(t.decode("utf-8", "replace"))
                          for t in re.findall(rb"<tag>(.*?)</tag>", block[1], re.S)]
     return entries
 
