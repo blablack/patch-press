@@ -74,8 +74,14 @@ _TYPE_KIT = "OneShots"
 _TYPE_WAVETABLE = "Wavetable"
 
 # Every factory kit has exactly 16 pads (416 saminst cells across 26 kits), addressed
-# by `celldisppos` 0-15.
+# by `celldisppos` 0-15. The hardware grid is two rows of 8 (confirmed against the
+# physical device), not 4x4 as the "pad N pairs with pad N+8" pattern in factory kits
+# might suggest at first glance — that pairing is really two full 8-pad kits stacked
+# (a "primary" row and an "alternate" row). celldisppos 0-7 is the top row, 8-15 the
+# bottom row (0 renders top-left on hardware — see _pad_positions).
 _KIT_PADS = 16
+_KIT_TOP_ROW = range(8)
+_KIT_BOTTOM_ROW = range(8, 16)
 
 # `loopfadeamt` — the `Loop Fade` knob — for a patch whose loops this pipeline detected
 # rather than read from the source file.
@@ -438,7 +444,8 @@ def _select_pads(by_note: dict[int, list[Sample]], limit: int) -> list[int]:
     spends every slot before reaching a tom or a cymbal, and ships a kit with no
     cymbals at all. So the pick goes round-robin across instrument categories instead
     — every category places its first pad before any places its second — and the
-    survivors are then put back in canonical order, which is what decides pad layout.
+    survivors are put back in canonical order here; _pad_positions is what actually
+    decides physical pad layout from there.
     """
     notes = sorted(by_note)
     if len(notes) <= limit:
@@ -460,13 +467,55 @@ def _select_pads(by_note: dict[int, list[Sample]], limit: int) -> list[int]:
     return sorted(kept)
 
 
-def _kit_pads(sset: SampleSet, name: str) -> tuple[dict[int, list[Sample]], list[int]]:
-    """The pads this kit ships, in canonical order, thinned to the device's 16 slots.
+def _pad_positions(by_note: dict[int, list[Sample]], pads: list[int]) -> dict[int, int]:
+    """Where each surviving pad lands on the Bento's physical 2-row-of-8 grid.
+
+    Not canonical order: `pads` arrives in canonical kick → snare → hats → … order
+    (see _select_pads), but the way the user actually plays the device is kick(s)
+    anchored to the *bottom* row from the left, snare(s) continuing immediately after
+    them in the same row, hi-hat(s) (hat_closed then hat_open) anchored to the *top*
+    row from the left, and everything else (clap, cymbals, toms, congas, …) filling
+    whatever slots are left over, in ascending celldisppos order. Since `pads` is
+    already canonically ordered, that leftover fill keeps "the rest" in the same
+    kick/snare/hats-adjacent family order real factory kits use for their own extra
+    percussion (cymbals grouped with toms, etc.) — just off the two anchored rows.
+
+    No row is a hard reservation: a kit with no kick just leaves the bottom row to
+    snare/overflow, and if kick+snare (or hi-hats) together outgrow their 8-slot row,
+    the overflow falls back into the leftover pool rather than being dropped.
+    """
+
+    def category(note: int) -> str:
+        return classify_instrument(by_note[note][0].metadata.get("instrument", ""))
+
+    kicks = [n for n in pads if category(n) == "kick"]
+    snares = [n for n in pads if category(n) == "snare"]
+    hats = [n for n in pads if category(n) in ("hat_closed", "hat_open")]
+    bottom_order = kicks + snares
+    rest = [n for n in pads if n not in kicks and n not in snares and n not in hats]
+
+    positions: dict[int, int] = {}
+    for n, slot in zip(bottom_order, _KIT_BOTTOM_ROW):
+        positions[n] = slot
+    for n, slot in zip(hats, _KIT_TOP_ROW):
+        positions[n] = slot
+    rest = rest + bottom_order[len(_KIT_BOTTOM_ROW) :] + hats[len(_KIT_TOP_ROW) :]
+
+    free = (n for n in range(_KIT_PADS) if n not in positions.values())
+    for n in rest:
+        positions[n] = next(free)
+    return positions
+
+
+def _kit_pads(sset: SampleSet, name: str) -> tuple[dict[int, list[Sample]], list[int], dict[int, int]]:
+    """The pads this kit ships, thinned to the device's 16 slots, and where each lands
+    on the physical grid.
 
     Pulled out of _build_kit because the browser preview has to audition the pads the
-    patch actually ended up with: a kit that arrived with more than 16 has already lost
-    some here, and a preview built from the unthinned set would play hits that aren't on
-    the card.
+    patch actually ended up with, in the same physical order: a kit that arrived with
+    more than 16 has already lost some here, and a preview built from the unthinned
+    set — or played back in canonical rather than physical order — would misrepresent
+    what's on the card.
     """
     by_note: dict[int, list[Sample]] = defaultdict(list)
     for s in sset.samples:
@@ -484,7 +533,8 @@ def _kit_pads(sset: SampleSet, name: str) -> tuple[dict[int, list[Sample]], list
             "%s: the Bento has %d pads, kit has %d — dropping %s",
             name, _KIT_PADS, len(by_note), ", ".join(dropped),
         )
-    return by_note, pads
+    positions = _pad_positions(by_note, pads)
+    return by_note, sorted(pads, key=lambda n: positions[n]), positions
 
 
 def _tag_name(sset: SampleSet, name: str) -> str:
@@ -566,8 +616,8 @@ class BentoExporter:
         # post-thinning pad list, or the mono table copy the wavetable patch loads.
         preview: dict = {}
         if sset.category == Category.DRUM:
-            by_note, pads = _kit_pads(sset, config.name)
-            doc = self._build_kit(wav_paths, by_note, pads)
+            by_note, pads, positions = _kit_pads(sset, config.name)
+            doc = self._build_kit(wav_paths, by_note, pads, positions)
             preview["kit_samples"] = [by_note[n][0] for n in pads]
         elif sset.category == Category.WAVETABLE:
             doc = self._build_wavetable(sset, wav_paths)
@@ -777,9 +827,10 @@ class BentoExporter:
         wav_paths: dict[tuple[int, int, int], Path],
         by_note: dict[int, list[Sample]],
         pads: list[int],
+        positions: dict[int, int],
     ):
         doc, track = _document("samtrack", outputbus=False)
-        for slot, note in enumerate(pads):
+        for note in pads:
             s = by_note[note][0]  # a pad plays one sample: no round-robin or velocity engine
             wav = wav_paths[(s.note, s.velocity, s.round_robin)]
             frames = wav_frame_count(wav)
@@ -789,7 +840,7 @@ class BentoExporter:
                 samtrigtype="0",
                 loopmodes="0",
                 multisammode="0",
-                celldisppos=slot,
+                celldisppos=positions[note],
             ))
             cell = _cell(
                 track, "samasst",

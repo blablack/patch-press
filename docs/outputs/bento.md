@@ -109,7 +109,7 @@ rsync -a --exclude patchindex.xml output/Bento/ /media/BENTO/
 | Preset | Mapping |
 |---|---|
 | Multisample (synth/pad/pluck) | A `multisamtrack`: one `saminst` instrument cell plus one `samasst` per note. Each sample keeps its own root note and gets a keyzone **centred** on it — every boundary sits midway between two neighbouring roots, so a key is repitched by at most half the capture step in either direction, and the outermost zones stretch to 0 and 127 so the whole keyboard sounds. Loop points ship as frame indices. Velocity and round-robins collapse to one sample per note (velocity closest to 100, then lowest RR). |
-| Drumkit | A `samtrack` of **16 pads**, each pad its own `saminst`/`samasst` pair addressed by `celldisppos`, one-shot triggered and unlooped. Pads land in the canonical kick → snare → hats → clap/perc → cymbals → toms → congas order, the same order the Deluge kit export uses. |
+| Drumkit | A `samtrack` of **16 pads**, each pad its own `saminst`/`samasst` pair addressed by `celldisppos`, one-shot triggered and unlooped. The physical grid is two rows of 8 (`celldisppos` 0-7 top, 8-15 bottom), and pads land by physical position, not canonical list order (unlike the Deluge kit export, which is still document-order kick → snare → …): kick(s) then snare(s) fill the bottom row from the left, hi-hat(s) fill the top row from the left, and everything else (clap/perc, cymbals, toms, congas) fills whatever's left over, in the same canonical adjacency order — see `_pad_positions` in `io/exporters/bento.py`. |
 | Wavetable | A `wttrack` under a third root, `UserPatches/Wavetable/`. The table WAV ships in the patch folder and the oscillator names it — see below. |
 
 Samples ship exactly as the pipeline produced them: no resampling, no downmix, no bit-depth change. Factory patches contain mono and stereo, 16- and 24-bit, 44.1 and 48 kHz WAVs in every combination, so there is nothing to convert to. A library sample the analysis never modified goes further and is copied byte-for-byte from the vendor's own file — see [Shipping the vendor's own file](../inputs/sample-libraries.html#shipping-the-vendors-own-file).
@@ -175,7 +175,7 @@ all of them are written even where this patch leaves them neutral.
 
 ## Caveats
 
-**Kits are capped at 16 pads.** Every factory kit has exactly 16, addressed by `celldisppos` 0–15. When a kit has more, the survivors are picked **round-robin across instrument categories** rather than by taking the first 16 in canonical order — a 32-pad kit with four kicks and four snares would otherwise spend every slot before reaching a cymbal. Each category places its first pad before any places its second, and the survivors go back into canonical order for the pad layout. The dropped pads are named in a warning:
+**Kits are capped at 16 pads.** Every factory kit has exactly 16, addressed by `celldisppos` 0–15. When a kit has more, the survivors are picked **round-robin across instrument categories** rather than by taking the first 16 in canonical order — a 32-pad kit with four kicks and four snares would otherwise spend every slot before reaching a cymbal. Each category places its first pad before any places its second, and the survivors go into canonical order first, which `_pad_positions` then remaps onto the physical grid (kick/snare bottom row, hi-hat top row, everything else filling the leftover slots). The dropped pads are named in a warning:
 
 ```
 01. Classic Multi Kit: the Bento has 16 pads, kit has 32 — dropping BD Clean Vinyl 09, …
