@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "audio-analysis": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/blablack/src/audio-analysis-mcp",
+        "python",
+        "-m",
+        "audio_analysis_mcp.server"
+      ],
+      "env": {
+        "AUDIO_ANALYSIS_OUTPUT_DIR": "./audio-analysis-output"
+      }
+    }
+  }
+}

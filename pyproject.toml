@@ -19,6 +19,12 @@ dependencies = [
 [project.scripts]
 patch-press = "patch_press.cli:main"
 
+[dependency-groups]
+dev = [
+    "ruff",       # configured below; not previously installed anywhere
+    "matplotlib", # used by .claude/loop-seam-qa/scripts/render_loop_diagnostic.py
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/patch_press"]
 

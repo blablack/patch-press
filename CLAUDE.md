@@ -1,5 +1,7 @@
 # patch-press
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 Automatically captures VST presets or loads sample libraries and exports ready-to-play presets for hardware samplers — Deluge (XML + WAV), Polyend Tracker (self-contained `.pti`) or 1010music Bento (a `patch.xml` folder per preset). Zero manual YAML writing is the goal — scan commands handle discovery, YAML files are the escape hatch when auto-detection gets something wrong.
 
 ## Pipeline
@@ -15,11 +17,27 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
 
 *Pitch verification runs only for library sources, never for VST.
 
+## Code architecture
+
+`src/patch_press/` (installed as the `patch-press` console script, entry point `cli:main`):
+
+- `cli/` — argparse wiring only (`main.py`): one `cmd_*`/`add_parser` pair per subcommand below, each just loads/builds config objects and calls into `runner/`
+- `config/` — `schema.py` (dataclasses: `RunConfig` + one per source type — `VSTSourceConfig`/`CLAPSourceConfig`/`LibrarySourceConfig`/`BitwigSourceConfig`/`WavetableSourceConfig` — plus `CaptureConfig`/`AnalysisConfig`/output config) and `loader.py` (YAML ↔ dataclasses)
+- `io/adapters/` — one per source type, each producing a `SampleSet`/`Sample` (`model/sample.py`) regardless of where the audio came from. `vst.py` and `clap.py` share render/capture plumbing via `PluginAdapterBase` (`_base.py`) — a subclass only supplies the state-map lookup and how to invoke a render; both call out to the sibling `patch-render` package (a compiled extension, `patch_render.render`/`render_clap`), with a `patch-render` CLI subprocess as VST's fallback when the extension isn't importable. `library.py`, `bitwig.py`, `wavetable.py` read files directly (filename parsing / `smpl` chunks, multisample XML, raw wavetable bytes respectively) — no renderer involved
+- `io/exporters/` — one per `--format`, registered in `EXPORTERS`/`get_exporter()` (`exporters/__init__.py`): `deluge.py`, `polyend.py` (`.pti`), `bento.py` (+ `bento_index.py` for `patchindex.xml`, `bento_preview.py` for `preview.wav`). Shared helpers (byte-verbatim WAV copy, mono write) in `_common.py`. An exporter opts into two behaviors via optional classmethods: `notes_used(notes)` (which of the capture grid it actually ships) and `bakes_loop_crossfade()` (bento says no — it has a hardware loop-fade knob instead)
+- `analysis/` — the six-stage pipeline (`pipeline.py:analyze_sampleset`: trim → envelope → pitch → loop → normalize, see `docs/pipeline.md`) plus feature-specific modules: `drumkit.py`/`drumkit_assemble.py` (kit classification/synthesis), `wavetable.py` (archetype detection), `channels.py` (mono/stereo measurement), `classify.py` (sound-type → profile)
+- `model/` — `Sample`/`SampleSet` (the in-memory contract between every adapter and every exporter) and `AudioBuffer`
+- `profiles/` — YAML defaults per profile (`data/*.yaml`), loaded via `load_profile`/`available_profiles`
+- `runner/` — `scan.py` (all `scan-*`/`assemble-kits` logic), `pipeline.py` (`run`/`classify`: one config → adapter → `analyze_sampleset` → exporter, plus `notes_to_capture`), `batch.py` (multi-config orchestration, skip-existing, worker pool)
+
+Two sibling repos this one depends on (see additional working directories): **patch-render** (the JUCE-based VST/CLAP audio host that adapters call into) and **patch-probe** (captures raw preset state to the YAMLs `scan-from-probe` consumes).
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `scan-from-probe <probe-dir> <config-dir>` | Analyse patch-probe YAMLs, write one config per preset |
+| `scan-clap <plugin.clap> <preset-dir> <config-dir>` | Analyse `.clap-preset`/`.fxp`/u-he `.h2p` files, write one config per preset |
 | `scan-library <folder> <config-dir> --type multisample\|kit\|drumkit` | Write one YAML per subfolder of a sample library |
 | `scan-oneshots <folder> <config-dir>` | Write one YAML per WAV in a folder of single-note oneshot presets (e.g. Monosounds) |
 | `scan-wavetables <folder> <config-dir>` | Write one YAML per WAV in a folder of Serum-format wavetables (e.g. Liam Wavetables — note filenames may be uppercase `.WAV`, so every WAV glob in the scan/adapter path is `case_sensitive=False`) |
@@ -27,6 +45,21 @@ YAML config → load_config() → VSTAdapter or LibraryAdapter
 | `assemble-kits <folder> <config-dir>` | Synthesize kit configs from a bag-of-hits library organized by instrument category (e.g. Samples From Mars "Individual Hits") |
 | `sample <config.yaml>` | Run the full pipeline for one config |
 | `batch <configs/*.yaml>` | Run all configs sequentially, skip existing outputs |
+| `classify <configs/*.yaml>` | Print sound-type classification for each config without exporting |
+| `profiles` | List available profiles |
+
+**Global flags:** `-v` (verbose progress), `--debug` (limit any scan command to 5 items — the fast way to test a scan change against a real library)
+
+## Development
+
+- Requires Python ≥ 3.14 (`.python-version`), managed with `uv`. `uv sync --all-groups` installs the editable package, its PyPI deps (`patch-render` included — prebuilt manylinux/macOS wheels, no local build needed) and the `dev` group (`ruff`, `matplotlib`) into `.venv/`, reproducibly from `uv.lock`. Run commands with `uv run patch-press <command> ...` / `uv run ruff check src`, or `PYTHONPATH=src python -m patch_press.cli <command> ...` against edits without going through `uv run` (what `.vscode/launch.json`'s debug configs do).
+- **No automated test suite** (no `tests/`, no pytest). Confidence comes from running real scans/builds and judging output by ear/eye, via standalone scripts in `debug_scripts/` (gitignored, personal per-machine tooling — deliberately kept out of the `patch_press` package and its CLI):
+  - `build_smoke.py` — builds one fixed, hand-picked preset per source method (library multisample/drumkit/kit, wavetables, oneshots, both bitwig loop-mode branches, clap) into `output/Smoke/`; the fast "did I break something" check, minutes instead of the full multi-hour library build
+  - `build_presets.py` — the real orchestrator: `plan|scan|build|all|status|redo <name>` over everything in `input/`, crash-safe/resumable (subprocess per `batch`), multi-format via `--format deluge,bento`
+  - `audition_preset.py` — renders a self-contained HTML page (waveform + looping playhead + zoomed seam view) from a Deluge XML+note or a raw WAV+loop points, to judge a loop by ear/eye before it ships
+  - `bento_bisect.py` — bisects a Bento card that reboots while browsing by moving patch folders in/out of `_HOLD/` (a rename, not a rebuild)
+  - `preset_inventory.py` — dumps a Markdown table of every generated config for review
+- Lint/format: `ruff` is configured in `pyproject.toml` (line-length 128, black-compatible formatting), installed via the `dev` dependency group, and wired into VS Code as format-on-save (`.vscode/settings.json`, `charliermarsh.ruff` extension). Run it with `uv run ruff check`/`uv run ruff format`.
 
 ## Profiles
 
