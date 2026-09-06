@@ -7,5 +7,4 @@ __pycache__
 .claude
 debug_scripts
 
-output
-input
+bento_original_data
