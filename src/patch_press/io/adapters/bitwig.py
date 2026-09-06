@@ -123,19 +123,25 @@ def _thin_notes(roots: list[int], note_step: int) -> list[int]:
     return kept
 
 
-def _pick_layer(zones: list[_Zone], target_velocity: int) -> list[_Zone]:
-    """From one note's zones, keep only the velocity layer nearest `target_velocity`.
-
-    A layer's representative velocity is its top (`vel_high`) — the loudest hit it covers.
-    Ties (two layers with the same top) resolve to the higher `vel_low`, i.e. the more
-    specific/louder zone. All zones of the winning layer are returned (they're the
-    round robins for that layer, ordered by group then filename).
+def _group_layers(zones: list[_Zone]) -> dict[tuple[int, int], list[_Zone]]:
+    """Group one note's zones by velocity layer (vel_high, vel_low), each list sorted by
+    group then filename (the round robins within that layer).
     """
     layers: dict[tuple[int, int], list[_Zone]] = {}
     for z in zones:
         layers.setdefault((z.vel_high, z.vel_low), []).append(z)
+    return {k: sorted(v, key=lambda z: (z.group, z.file)) for k, v in layers.items()}
+
+
+def _pick_layer(layers: dict[tuple[int, int], list[_Zone]], target_velocity: int) -> list[_Zone]:
+    """Keep only the velocity layer nearest `target_velocity`.
+
+    A layer's representative velocity is its top (`vel_high`) — the loudest hit it covers.
+    Ties (two layers with the same top) resolve to the higher `vel_low`, i.e. the more
+    specific/louder zone.
+    """
     best_key = min(layers, key=lambda k: (abs(k[0] - target_velocity), -k[1]))
-    return sorted(layers[best_key], key=lambda z: (z.group, z.file))
+    return layers[best_key]
 
 
 def _read_region(raw: bytes, start: int, stop: int) -> AudioBuffer:
@@ -168,11 +174,17 @@ class BitwigAdapter:
                 self._zones = parse_multisample_xml(z.read(xml_name))
         return self._zones
 
-    def _selection(self, max_round_robins: int, note_step: int) -> list[_Zone]:
+    def _selection(
+        self, max_round_robins: int, note_step: int, keep_velocity_layers: bool = False
+    ) -> list[_Zone]:
         """Metadata-only: the zones capture() will turn into samples.
 
-        One velocity layer per note (nearest config.velocity), notes thinned by
-        note_step, round robins within the layer capped at max_round_robins.
+        Notes thinned by note_step, round robins within a layer capped at
+        max_round_robins. By default, one velocity layer per note (nearest
+        config.velocity) — every hardware format except Bento's SampInst plays one
+        sample per note regardless of what it's handed, so there's no point capturing
+        more. `keep_velocity_layers=True` keeps every layer instead, for a build that
+        can actually ship them (see io/exporters/bento.py `keeps_velocity_layers`).
         """
         by_root: dict[int, list[_Zone]] = {}
         for z in self._load_zones():
@@ -180,22 +192,32 @@ class BitwigAdapter:
 
         selected: list[_Zone] = []
         for root in _thin_notes(sorted(by_root), note_step):
-            layer = _pick_layer(by_root[root], self._config.velocity)
-            selected.extend(layer[:max_round_robins])
+            layers = _group_layers(by_root[root])
+            kept = layers.values() if keep_velocity_layers else [_pick_layer(layers, self._config.velocity)]
+            for layer in kept:
+                selected.extend(layer[:max_round_robins])
         return selected
 
-    def expected_count(self, max_round_robins: int = 1, note_step: int = 1) -> int:
-        return len(self._selection(max_round_robins, note_step))
+    def expected_count(
+        self, max_round_robins: int = 1, note_step: int = 1, keep_velocity_layers: bool = False
+    ) -> int:
+        return len(self._selection(max_round_robins, note_step, keep_velocity_layers))
 
     def capture(
-        self, name: str | None = None, max_round_robins: int = 1, note_step: int = 1, progress=None
+        self,
+        name: str | None = None,
+        max_round_robins: int = 1,
+        note_step: int = 1,
+        progress=None,
+        keep_velocity_layers: bool = False,
     ) -> SampleSet:
         path = self._config.path
-        selection = self._selection(max_round_robins, note_step)
+        selection = self._selection(max_round_robins, note_step, keep_velocity_layers)
 
-        # Round-robin index per (root) so several kept RRs of the same note stay distinct
-        # in the (note, velocity, round_robin) key the exporters use.
-        rr_counter: dict[int, int] = {}
+        # Round-robin index per (root, vel_high) so each velocity layer of a note is
+        # numbered independently, and several kept RRs of one layer stay distinct in the
+        # (note, velocity, round_robin) key the exporters use.
+        rr_counter: dict[tuple[int, int], int] = {}
         samples: list[Sample] = []
         with zipfile.ZipFile(path) as z:
             for zone in selection:
@@ -213,8 +235,9 @@ class BitwigAdapter:
 
                 audio, loop_points = self._resolve_loop(audio, zone, metadata)
 
-                rr = rr_counter.get(zone.root, 0) + 1
-                rr_counter[zone.root] = rr
+                rr_key = (zone.root, zone.vel_high)
+                rr = rr_counter.get(rr_key, 0) + 1
+                rr_counter[rr_key] = rr
                 samples.append(
                     Sample(
                         note=zone.root,

@@ -14,7 +14,7 @@ from ..config.schema import (
 from ..io.adapters.bitwig import BitwigAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.exporters import get_exporter
-from .pipeline import notes_to_capture, run
+from .pipeline import keeps_velocity_layers, notes_to_capture, run
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,9 @@ def _expected_notes(config: RunConfig, output_format: str) -> int:
             return 0
     if isinstance(src, BitwigSourceConfig):
         try:
-            return BitwigAdapter(src).expected_count(cap.round_robins, cap.note_step)
+            return BitwigAdapter(src).expected_count(
+                cap.round_robins, cap.note_step, keeps_velocity_layers(output_format)
+            )
         except (OSError, ValueError):
             return 0
     if isinstance(src, WavetableSourceConfig):

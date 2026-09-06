@@ -53,6 +53,17 @@ def notes_to_capture(config: RunConfig, output_format: str) -> list[int]:
     return list(notes_used(notes)) if notes_used is not None else notes
 
 
+def keeps_velocity_layers(output_format: str) -> bool:
+    """Whether the target format has a real velocity-zone engine worth capturing more
+    than one velocity layer for (only Bento's SampInst does — see io/exporters/bento.py
+    `keeps_velocity_layers`). Same optional-classmethod shape as `notes_used`: absent
+    means no, which is every non-Bento format today and is also what every source
+    besides Bitwig already produces regardless.
+    """
+    keeps = getattr(get_exporter(output_format), "keeps_velocity_layers", None)
+    return keeps() if keeps is not None else False
+
+
 def run(config: RunConfig, output_path: Path, output_format: str, workers: int = 1, progress=None) -> Path:
     if isinstance(config.source, WavetableSourceConfig):
         # A wavetable isn't a captured performance — it ships to the SD card
@@ -95,17 +106,23 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             tempo_bpm=config.analysis.tempo_bpm or config.capture.tempo_bpm,
         )
     elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig)):
-        adapter = (
-            BitwigAdapter(config.source)
-            if isinstance(config.source, BitwigSourceConfig)
-            else LibraryAdapter(config.source)
-        )
-        sset = adapter.capture(
-            name=config.name or None,
-            max_round_robins=config.capture.round_robins,
-            note_step=config.capture.note_step,
-            progress=progress,
-        )
+        if isinstance(config.source, BitwigSourceConfig):
+            adapter = BitwigAdapter(config.source)
+            sset = adapter.capture(
+                name=config.name or None,
+                max_round_robins=config.capture.round_robins,
+                note_step=config.capture.note_step,
+                progress=progress,
+                keep_velocity_layers=keeps_velocity_layers(output_format),
+            )
+        else:
+            adapter = LibraryAdapter(config.source)
+            sset = adapter.capture(
+                name=config.name or None,
+                max_round_robins=config.capture.round_robins,
+                note_step=config.capture.note_step,
+                progress=progress,
+            )
         analysis = config.analysis
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")

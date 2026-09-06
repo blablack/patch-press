@@ -114,6 +114,54 @@ def _parse_note_rr(stem: str) -> tuple[int, int | None] | None:
     return midi, rr
 
 
+# Matches a vendor multi-velocity/round-robin flat-drumkit convention (Just Add Drums:
+# `..._KICK_V01_RR01.wav` .. `..._KICK_V06_RR08.wav` — 48 files that are all just "KICK").
+# Anchored end-of-stem so a filename without this suffix (Samples From Mars '808 From
+# Mars': one filename = one distinct instrument, no velocity/RR takes) never matches.
+_VELOCITY_RR_RE = re.compile(r"^(.*)_V(\d+)_RR(\d+)$", re.IGNORECASE)
+
+
+def _collapse_velocity_layers(wavs: list[Path]) -> list[Path]:
+    """Collapse multi-velocity/round-robin takes of the same real instrument down to one
+    file per instrument, for flat drumkit folders that encode both in the filename.
+
+    Without this, `_load_drumkit_flat` sees every take as its own pad — a 15-instrument
+    Just Add Drums kit (each instrument recorded at 4-6 velocities x 8 round robins) reads
+    as ~560 "pads" instead of 15, and Bento's 16-pad thinning (io/exporters/bento.py
+    `_select_pads`) then makes an arbitrary pick across a pile of near-duplicates instead
+    of just seeing the real kit.
+
+    Files that don't match `_V<NN>_RR<NN>` pass through unchanged (one file = one pad, same
+    as today), so this is purely additive — libraries that never use the convention are
+    completely unaffected.
+
+    The kit hardware this feeds has no round-robin or velocity engine (every kit exporter
+    picks a single sample per pad — see bento.py `_kit_pads`, deluge.py `_export_kit`,
+    polyend.py `_export_kit`), so one representative file is picked per instrument: round
+    robin 1 (arbitrary — round robins of the same hit are interchangeable), and one
+    velocity layer below the loudest. Verified on Just Add Drums by measuring actual peak
+    level per V-number: V01 is softest and V-max is loudest (often borderline-clipped) —
+    "loud but not the hardest hit" is the layer a drummer would actually reach for.
+    """
+    groups: dict[str, dict[int, dict[int, Path]]] = defaultdict(lambda: defaultdict(dict))
+    passthrough: list[Path] = []
+    for wav in wavs:
+        m = _VELOCITY_RR_RE.match(wav.stem)
+        if m is None:
+            passthrough.append(wav)
+            continue
+        key, vel, rr = m.group(1), int(m.group(2)), int(m.group(3))
+        groups[key][vel][rr] = wav
+
+    resolved = list(passthrough)
+    for by_velocity in groups.values():
+        top_vel = max(by_velocity)
+        vel = max((v for v in by_velocity if v < top_vel), default=top_vel)
+        by_rr = by_velocity[vel]
+        resolved.append(by_rr[min(by_rr)])
+    return resolved
+
+
 def _grouped_notes(wavs: list[Path], note_step: int = 1) -> dict[int, dict[int | None, Path]]:
     """Group WAVs by parsed note → {rr_index_or_None: path}, thinned to at least
     note_step semitones apart (greedy, low-to-high).
@@ -157,7 +205,7 @@ class LibraryAdapter:
         subdirs = [p for p in sorted(path.iterdir()) if p.is_dir()]
         if wavs:
             if self._config.drumkit:
-                return self._load_drumkit_flat(sset_name, path, wavs, progress)
+                return self._load_drumkit_flat(sset_name, path, _collapse_velocity_layers(wavs), progress)
             return self._load_multisample(sset_name, path, wavs, max_round_robins, note_step, progress)
         if subdirs:
             return self._load_kit(sset_name, path, subdirs, max_round_robins, progress)
@@ -178,7 +226,7 @@ class LibraryAdapter:
         wavs = sorted(path.glob("*.wav", case_sensitive=False))
         if wavs:
             if self._config.drumkit:
-                return len(wavs)
+                return len(_collapse_velocity_layers(wavs))
             total = 0
             for files in _grouped_notes(wavs, note_step).values():
                 numbered = [k for k in files if k is not None]

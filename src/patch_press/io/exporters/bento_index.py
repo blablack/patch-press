@@ -23,6 +23,7 @@ backslash-separated paths.
 import fcntl
 import logging
 import re
+from collections.abc import Collection
 from pathlib import Path
 from xml.sax.saxutils import escape, unescape
 
@@ -186,3 +187,64 @@ def update_index(patch_root: Path, patch_path: str, tags: list[str]) -> None:
         fh.seek(0)
         fh.truncate()
         fh.write(_render(entries))
+
+
+def sync_index(
+    source_index: Path, dest_index: Path, wanted: Collection[str], *, execute: bool = True
+) -> tuple[int, int]:
+    """Copy tag entries for `wanted` patch paths from one patchindex.xml into another.
+
+    `update_index` above assumes the caller ships everything it builds — `bento.export()`
+    writes one entry per patch as it goes, so the index at the end of a run is complete for
+    that run's own output tree. That assumption breaks for tooling that curates a subset of
+    a build afterwards (a fixed "these patches go on this card" list, smaller than everything
+    `sample`/`batch` produced): copying the whole source index onto the card would tag
+    patches that were never written there, and `rsync --exclude patchindex.xml` — the
+    workaround `docs/outputs/bento.md` documents for plain whole-tree syncs — throws every
+    tag away instead, including ones already on the device.
+
+    This is the third option: read-modify-write `dest_index` exactly like `update_index`
+    does per-patch (lock held, entries this call doesn't touch — other collections, a
+    previous sync, a tag set by hand on the device — read back and preserved), but apply it
+    to `wanted` in bulk from a source index that was built once, off to the side.
+
+    `execute=False` computes the same (updated, missing) counts a real run would without
+    writing `dest_index`, for a caller with its own dry-run/plan convention.
+
+    Returns (updated, missing) — `missing` counts `wanted` paths absent from `source_index`
+    (nothing derived a tag for them, or the source is stale); those are left untouched in
+    `dest_index` rather than cleared, the same best-effort stance as an unwritable index:
+    an unsynced tag never blocks a patch from working.
+    """
+    source_entries = _parse(source_index.read_bytes()) if source_index.exists() else {}
+
+    def _apply(entries: dict[str, list[str]]) -> tuple[int, int]:
+        updated = missing = 0
+        for path in wanted:
+            if path in source_entries:
+                entries[path] = source_entries[path]
+                updated += 1
+            else:
+                missing += 1
+        return updated, missing
+
+    if not execute:
+        raw = dest_index.read_bytes() if dest_index.exists() else b""
+        if raw.strip() and b"<patchmetadata" not in raw:
+            return 0, len(wanted)
+        return _apply(_parse(raw))
+
+    dest_index.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest_index, "a+b") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.seek(0)
+        raw = fh.read()
+        if raw.strip() and b"<patchmetadata" not in raw:
+            log.warning("%s is not a patch index — leaving it alone", dest_index)
+            return 0, len(wanted)
+        entries = _parse(raw)
+        updated, missing = _apply(entries)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(_render(entries))
+    return updated, missing

@@ -553,6 +553,25 @@ def _tag_name(sset: SampleSet, name: str) -> str:
     return f"{name} {wt.archetype.replace('_', ' ')}" if wt is not None else name
 
 
+def _centered_ranges(values: Sequence[int], lo: int, hi: int) -> list[tuple[int, int]]:
+    """Split [lo, hi] into one contiguous zone per value, each zone centred on its own
+    value: every boundary sits midway between two neighbouring values, and the outermost
+    zones stretch to lo/hi so the whole range is covered. `values` must be sorted.
+
+    Shared by keyranges (root notes across the keyboard, hi=127) and velocity ranges
+    (layers within one note, hi=128) — verified against the factory's own multi-velocity
+    patches: Medium Muff's velroots 42/97/118 produce exactly the zone boundaries
+    (0-69/70-107/108-128) this formula gives. A single value collapses to (lo, hi), the
+    whole range — the pre-existing single-layer-per-note behavior.
+    """
+    ranges = []
+    for i, v in enumerate(values):
+        bottom = lo if i == 0 else (values[i - 1] + v + 1) // 2
+        top = hi if i == len(values) - 1 else (v + values[i + 1] - 1) // 2
+        ranges.append((bottom, top))
+    return ranges
+
+
 def _loop_bounds(sample: Sample, frames: int) -> tuple[int, int]:
     """Loop points for one sample, in frames.
 
@@ -599,6 +618,19 @@ class BentoExporter:
         records it, ships the samples as captured, and `loopfadeamt` carries the job.
         """
         return False
+
+    @classmethod
+    def keeps_velocity_layers(cls) -> bool:
+        """Yes. `SampInst` genuinely has a velocity-zone engine — confirmed against the
+        factory bank (11 of 65 patches ship real per-note velocity zones, up to 4 layers,
+        e.g. Medium Muff) — unlike Deluge's `<sampleRange>` (no velocity attribute at all)
+        or `.pti` (one embedded sample, no zoning of any kind). So a source capable of
+        capturing more than one velocity per note should be asked to, when building for
+        this format — see runner/pipeline.py and io/adapters/bitwig.py
+        `keep_velocity_layers`. `_build_multisample` does the actual zoning; every other
+        exporter still collapses to one sample per note regardless of what it's handed.
+        """
+        return True
 
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
         if not sset.samples:
@@ -747,21 +779,30 @@ class BentoExporter:
         wav_paths: dict[tuple[int, int, int], Path],
         name: str,
     ):
-        # One sample per MIDI note. Prefer velocity closest to 100, then lowest RR —
-        # the same collapse the Deluge exporter does. The format does support velocity
-        # zones, but nothing upstream produces layered sets worth shipping.
-        by_note: dict[int, Sample] = {}
+        # Group by note, then by distinct velocity — a source that only ever captures one
+        # velocity per note (every non-Bitwig source today, and a Bitwig source built
+        # without keep_velocity_layers) collapses right back to today's single-cell-per-
+        # note output. Round robins within one velocity layer still collapse to the
+        # lowest RR: there's no evidence Bento has a round-robin engine, only velocity
+        # zoning (see the kit exporter's own "one sample per pad" pick).
+        by_note: dict[int, dict[int, Sample]] = defaultdict(dict)
         for s in sset.samples:
-            if s.note not in by_note or abs(s.velocity - 100) < abs(by_note[s.note].velocity - 100):
-                by_note[s.note] = s
+            layers = by_note[s.note]
+            if s.velocity not in layers or s.round_robin < layers[s.velocity].round_robin:
+                layers[s.velocity] = s
         notes = sorted(by_note)
+
+        # loopmodes/fade below are one property for the whole instrument, so they need a
+        # single representative sample per note — velocity closest to 100, the same
+        # collapse the Deluge exporter still does outright.
+        representative = {n: min(by_note[n].values(), key=lambda s: abs(s.velocity - 100)) for n in notes}
 
         # `loopmodes` is a property of the instrument, not of the individual samples, so
         # a set where the loop detector succeeded on some notes and not others has to
         # pick one answer for all of them. Majority wins: turning looping off costs the
         # looped notes their sustain, while turning it on makes every unlooped note
         # repeat its whole length, which drones.
-        looped = sum(1 for n in notes if by_note[n].loop_points)
+        looped = sum(1 for n in notes if representative[n].loop_points)
         loop_on = looped * 2 >= len(notes)
         if looped and looped != len(notes):
             log.warning(
@@ -776,7 +817,7 @@ class BentoExporter:
         # such guarantee and wants the device's fade. Like `loopmodes`, this is one
         # value for the whole instrument, so the majority decides.
         authored = sum(
-            1 for n in notes if by_note[n].analysis.get("loop_source") == "authored_smpl"
+            1 for n in notes if representative[n].analysis.get("loop_source") == "authored_smpl"
         )
         fade = _LOOP_FADE if loop_on and authored * 2 < len(notes) else 0
 
@@ -791,32 +832,52 @@ class BentoExporter:
             loopfadeamt=fade,
         ))
 
-        for i, note in enumerate(notes):
-            s = by_note[note]
-            wav = wav_paths[(s.note, s.velocity, s.round_robin)]
-            frames = wav_frame_count(wav)
-            # Zones are centred on their root: each boundary sits midway between two
-            # neighbouring roots, so a note is repitched by at most half the capture
-            # step in either direction instead of a full step upwards. The outermost
-            # zones stretch to the ends of the keyboard so every key sounds.
-            low = 0 if i == 0 else (notes[i - 1] + note + 1) // 2
-            high = 127 if i == len(notes) - 1 else (note + notes[i + 1] - 1) // 2
-            loop_start, loop_end = _loop_bounds(s, frames)
-            cell = _cell(
-                track, "samasst",
-                filename=wav.name,
-                rootnote=str(note),
-                keyrangebottom=str(low),
-                keyrangetop=str(high),
-                velroot="63",
-                velrangebottom="0",
-                velrangetop="128",
-                samstart="0",
-                samlen=str(frames),
-                loopstart=str(loop_start),
-                loopend=str(loop_end),
+        # Keyranges are centred on their root note (a note is repitched by at most half
+        # the capture step either way instead of a full step upwards), velocity ranges
+        # centred on each layer's own velocity within a note — same centering, verified
+        # against the factory's own multi-velocity patches (see _centered_ranges).
+        key_ranges = dict(zip(notes, _centered_ranges(notes, 0, 127)))
+        cell_count = 0
+        for note in notes:
+            low, high = key_ranges[note]
+            velocities = sorted(by_note[note])
+            vel_ranges = _centered_ranges(velocities, 0, 128)
+            for vel, (vbottom, vtop) in zip(velocities, vel_ranges):
+                s = by_note[note][vel]
+                wav = wav_paths[(s.note, s.velocity, s.round_robin)]
+                frames = wav_frame_count(wav)
+                loop_start, loop_end = _loop_bounds(s, frames)
+                # A single layer keeps the pre-existing placeholder velroot (63, the
+                # factory's own value for an unlayered instrument) rather than the
+                # sample's own capture velocity, so a non-layered source's output is
+                # unchanged byte-for-byte.
+                velroot = str(vel) if len(velocities) > 1 else "63"
+                cell = _cell(
+                    track, "samasst",
+                    filename=wav.name,
+                    rootnote=str(note),
+                    keyrangebottom=str(low),
+                    keyrangetop=str(high),
+                    velroot=velroot,
+                    velrangebottom=str(vbottom),
+                    velrangetop=str(vtop),
+                    samstart="0",
+                    samlen=str(frames),
+                    loopstart=str(loop_start),
+                    loopend=str(loop_end),
+                )
+                etree.SubElement(cell, "slices")
+                cell_count += 1
+
+        # No confirmed firmware ceiling — the largest known factory instrument (Medium
+        # Muff, genuinely velocity-layered) has 255 samasst cells. Warn well past that
+        # rather than fail; nothing here has ever seen a real limit to fail against.
+        if cell_count > 300:
+            log.warning(
+                "%s: %d samasst cells (largest known factory instrument has 255) — "
+                "unconfirmed whether the firmware has a real ceiling above that",
+                name, cell_count,
             )
-            etree.SubElement(cell, "slices")
 
         _noteseq(track, is_kit=False)
         return doc

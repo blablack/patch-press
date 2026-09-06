@@ -25,6 +25,7 @@ from ..analysis.probe import (
     classify_sustain_type,
     probe,
 )
+from ..analysis.velocity import is_velocity_sensitive, velocity_timbre_shift
 from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
@@ -46,6 +47,16 @@ DEFAULT_DURATION_S = 15.0
 # so C1 = 24, C6 = 84. Overridable per scan via --start-note / --end-note.
 DEFAULT_START_NOTE = 24  # C1
 DEFAULT_END_NOTE = 84  # C6
+
+# A clearly soft hit relative to the default probe_velocity=100, for the extra render
+# that measures whether a preset's timbre (not just its loudness) responds to velocity
+# — see analysis/velocity.py.
+_VELOCITY_PROBE_LOW = 32
+
+# capture.velocities written into a generated config when the preset is judged velocity-
+# sensitive: soft/medium/hard. Not derived — a starting spread, tune by ear like
+# _VELOCITY_PROBE_LOW and analysis/velocity.py's own threshold.
+DEFAULT_VELOCITY_LAYERS = [40, 90, 127]
 
 _NOTE_NAME_RE = re.compile(r"^([A-Ga-g])(#|b)?(-?\d+)$")
 
@@ -245,6 +256,20 @@ def _config_yaml(
         meta += f" channels={'mono' if mono else 'stereo'} (side {format_side_db(result.side_db)})"
     mono_line = "  mono: true\n" if mono else ""
 
+    # Multiple velocity layers are only worth their 2-3x render/storage cost when a
+    # target format can actually ship them as real zones (Bento's SampInst — see
+    # io/exporters/bento.py `keeps_velocity_layers`; every other format collapses to one
+    # sample per note regardless) AND the preset's timbre, not just its loudness, changes
+    # with velocity (analysis/velocity.py). Drums keep the profile's own multi-velocity
+    # default, so this never overrides it. Written like every other scan decision, so it
+    # reads and hand-edits the same way.
+    velocity_sensitive = result.velocity_shift is not None and is_velocity_sensitive(result.velocity_shift)
+    if result.velocity_shift is not None:
+        meta += f" velocity_shift={result.velocity_shift:.3f}{' (sensitive)' if velocity_sensitive else ''}"
+    velocities_line = (
+        f"  velocities: {DEFAULT_VELOCITY_LAYERS}\n" if velocity_sensitive and profile != "drums" else ""
+    )
+
     # Drums keep the profile's full-kit range; start/end-note is a melodic concept.
     note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
@@ -264,6 +289,7 @@ def _config_yaml(
         f"  duration_s: {result.duration_s}\n"
         f"  release_tail_s: {result.release_tail_s}\n"
         f"{mono_line}"
+        f"{velocities_line}"
         f"\n"
         f"output:\n"
         f'  name: "{preset_name}"\n'
@@ -324,6 +350,13 @@ def _probe_and_classify_preset(
     short_audio = adapter.render_note(probe_note, probe_velocity, SHORT_HOLD_S, total_s, sample_rate=sample_rate)
     long_audio = adapter.render_note(probe_note, probe_velocity, long_hold_s, total_s, sample_rate=sample_rate)
 
+    # One extra render, at a clearly softer velocity than the probe's own, to see whether
+    # this preset's timbre — not just its loudness, which a hardware sampler already
+    # reproduces from one capture with its own velocity-to-volume scaling — actually
+    # changes with how hard the note is hit. See analysis/velocity.py.
+    soft_audio = adapter.render_note(probe_note, _VELOCITY_PROBE_LOW, long_hold_s, total_s, sample_rate=sample_rate)
+    velocity_shift = velocity_timbre_shift(soft_audio, long_audio)
+
     # Mono or stereo, measured on the renders this probe already pays for (the classify
     # notes below join in when they get rendered). The widest side level of the lot wins:
     # a patch whose stereo lives in a delay or reverb tail can look mono at the note that
@@ -374,7 +407,7 @@ def _probe_and_classify_preset(
     side_db = max(side_dbs)
     if is_mono(side_db):
         tqdm.write(f"  {preset_name}: mono ({format_side_db(side_db)}) → single-channel capture")
-    return replace(result, side_db=side_db), preset_profile, long_audio
+    return replace(result, side_db=side_db, velocity_shift=velocity_shift), preset_profile, long_audio
 
 
 def scan_from_probe(

@@ -89,7 +89,7 @@ Controls how VST/CLAP plugins are played — how many notes, how loudly, for how
 |---|---|---|---|
 | `note_range` | `[int, int]` | `[36, 96]` (usually overridden by profile) | MIDI range to capture. |
 | `note_step` | `int` | `3` | Semitones between captured notes. `1` = every note, `12` = every octave. Drums profile uses `1`. |
-| `velocities` | `list[int]` | `[100]` | MIDI velocities to capture. Drums profile uses `[64, 100, 127]`. |
+| `velocities` | `list[int]` | `[100]` | MIDI velocities to capture. Drums profile uses `[64, 100, 127]`. `scan-from-probe`/`scan-clap` write `[40, 90, 127]` here when they measure the preset's timbre (not just its loudness) actually changing with velocity — see `analysis/velocity.py` and the `velocity_shift` value in the config's own `#` meta comment. Only Bento's `SampInst` ships the extra layers as real zones; every other format still collapses to one sample per note regardless, so this is a no-op capture-time cost for them. |
 | `round_robins` | `int` | `1` | Number of consecutive captures per (note, velocity). Drums profile uses `3`. |
 | `duration_s` | `float` | `4.0` | Note hold length in seconds. Pad profile uses `8`, pluck uses `2`. |
 | `release_tail_s` | `float` | `2.0` | Post note-off recording time. Pad uses `5`. |

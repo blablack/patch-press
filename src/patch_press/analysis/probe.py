@@ -86,6 +86,12 @@ class ProbeResult:
     # appends, and it decides whether the capture ships one channel or two. None when
     # nothing measured it.
     side_db: float | None = None
+    # Spectral-centroid shift between a soft and a loud render of the probe note
+    # (analysis/velocity.py). Not measured by probe() — the scan fills it in from an
+    # extra render alongside the ones it already pays for, and it decides whether the
+    # generated config asks for more than one captured velocity layer. None when
+    # nothing measured it.
+    velocity_shift: float | None = None
 
 
 def _rms_envelope(mono: np.ndarray) -> np.ndarray:

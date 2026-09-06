@@ -163,9 +163,10 @@ def _write(audio: np.ndarray, sample_rate: int, dest: Path) -> None:
 def _pick_note_sample(sset: SampleSet) -> Sample:
     """The one note a melodic preview plays: nearest middle C, velocity nearest 100.
 
-    The same collapse `_build_multisample` uses to choose which velocity layer ships,
-    so the preview auditions a sample the patch actually contains, at its own root
-    pitch — exactly what the device plays when that key is pressed.
+    `_build_multisample` may now ship several velocity layers for that note (see
+    `BentoExporter.keeps_velocity_layers`); this still only auditions one of them
+    (nearest 100), which is always one the patch actually contains — a reasonable
+    single sample to represent the key, not a claim that it's the only one on it.
     """
     return min(
         sset.samples,
