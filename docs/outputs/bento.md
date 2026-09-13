@@ -44,6 +44,8 @@ Unlike the `.pti` export, the Bento has real multisample keyzones, so a melodic 
 
 There is no display-name field in `patch.xml` — a factory patch names its track `cellname="Track 1"` and nothing else. So the folder name is simultaneously the label the browser prints, the key it sorts a single flat list by, and the only thing distinguishing one patch from the next. Factory names are built for that: 9.5 characters on average across the 65 `SampInst` patches, never more than 18.
 
+**18 is a hard cap here too, not just an observation about the factory bank — confirmed on hardware.** The browser row doesn't scroll or wrap a name that's too long to fit; it just clips it. Without an enforced limit that's actively harmful rather than cosmetic: the prefix (below) is identical for every preset out of one source folder, so once a joined name runs past the row width, every preset in that folder clips to the same visible text and they become indistinguishable on the device — several patches all showing, say, `SFM VS Keys Pads -`. `_MAX_NAME = 18` in `bento.py` enforces the cap, and `_fit_max_name` spends the budget on the preset's own name first, shrinking or dropping the prefix rather than the name, since the prefix carries no distinguishing information within a folder anyway.
+
 Spelling every level out in full does not survive contact with a real library. `Samples from Mars` alone produces 1242 presets, and joined naively they read:
 
 ```
@@ -56,7 +58,7 @@ Samples from Mars - Vinyl Synths from Mars - 02 Keys & Pads - Polaris Space Dela
 SFM VS Keys Pads - Polaris Space Delay Soft D2
 ```
 
-Across the ~2200-preset corpus that takes the median name from 57 characters to 31 and the longest from 102 to 65, with no two presets colliding. Four rules do it, in `_flat_patch_folder`:
+That's still 46 characters, well past the 18-character cap — the labels only get it into the neighborhood, and `_fit_max_name` does the last mile (see above), landing on `Polaris Space Dela`. Four rules produce the pre-cap label, in `_flat_patch_folder`:
 
 | Rule | Effect |
 |---|---|
@@ -71,7 +73,7 @@ On top of that the preset's own name loses whatever the prefix already says: a l
 
 The 2200-preset corpus lands in 153 such prefixes — `Diva Bass`, `SFM VS Leads`, `WAE Bass Sustained`, `OT Woodwinds`, `SFM EW Drums MPC60` — which is what a flat card gets in place of folders.
 
-**Shortening can in principle collide** where the full path could not, so `patch-press batch` checks the whole set before it builds and logs a warning naming both configs if two would claim the same folder. The current corpus produces none.
+**Shortening can collide** where the full path could not — more so now that `_fit_max_name` clips to 18 characters, since two presets that only differ after character 18 (two long names sharing a long common start, most often two round-robins or velocity variants of what was one preset name) now clip to the identical folder name. `patch-press batch` checks the whole set before it builds and logs a warning naming both configs if two would claim the same folder; only one of them survives the build (the other overwrites it, or — with skip-existing on — reads as already built). Re-running the full corpus check after the 18-character cap landed is still outstanding.
 
 ## Tags: the only filter a flat card gets
 

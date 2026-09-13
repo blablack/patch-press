@@ -168,6 +168,17 @@ def _strip_periods(text: str) -> str:
 # ~2200-preset corpus, like the loop-detection constants elsewhere in this codebase.
 _VERBATIM_LIMIT = 11
 
+# Hard cap on the folder name, confirmed on hardware (user-reported): the Bento's
+# browser doesn't scroll or wrap a name too long for the row — it just clips it — and
+# unlike the period bug above, there's no separate display string to fix, because the
+# folder name *is* the display string. Factory names never exceed this (9.5 chars on
+# average across the 65 `SampInst` patches), but ours can't rely on being that short:
+# without an enforced cap, every preset out of one source folder shares the same
+# prefix, so once the joined name runs past what the row shows, they clip to an
+# identical-looking string and become indistinguishable on the device — the actual
+# bug this cap exists to prevent, not a cosmetic tidy-up.
+_MAX_NAME = 18
+
 _TOKEN_RE = re.compile(r"[0-9A-Za-z']+")
 # A source folder's ordering prefix: "01. Bass", "1 BASS", "07 - FX". Capped at two
 # digits so a folder that simply starts with a number keeps it ("808 From Mars",
@@ -262,6 +273,35 @@ def _strip_label_echo(name: str, labels: list[str]) -> str:
     return name
 
 
+def _fit_max_name(prefix: str, name: str) -> str:
+    """Join prefix and name, shrinking the prefix toward nothing if the device can't
+    show it all. The name itself is never clipped.
+
+    The prefix is identical for every preset out of one source folder — it's context,
+    not identity. Under a tight budget it's the name that has to survive, because the
+    name is the only part that tells two presets in the same folder apart; a display
+    that clips the joined string at the prefix (the common case without this) leaves
+    every preset in a folder showing the same clipped text. So the name gets first
+    claim on the budget and the prefix gets whatever's left over, down to nothing —
+    literally nothing, not "whatever's left of the name": clipping the name instead
+    (an earlier version of this function did, via `name[:_MAX_NAME]`) reproduces on
+    the *software* side the exact bug this cap exists to fix on the hardware side —
+    two different presets ("TUC The Great Zorp I"/"II") silently landing on the same
+    folder name — and a name mangled mid-word ("HS Chord Bass - minor" -> "HS Chord
+    Bass - mi") is worse than a plain overlength name, which at least still reads.
+    So the device's row width is a soft target once the name alone already fills it,
+    not a hard byte budget worth breaking uniqueness or readability for.
+    """
+    sep = " - "
+    joined = f"{prefix}{sep}{name}" if prefix else name
+    if len(joined) <= _MAX_NAME or not prefix:
+        return joined
+    room_for_prefix = _MAX_NAME - len(name) - len(sep)
+    if room_for_prefix <= 0:
+        return name
+    return f"{prefix[:room_for_prefix]}{sep}{name}"
+
+
 def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
     """The single folder name a Bento patch lives in under SampInst/OneShots.
 
@@ -279,14 +319,14 @@ def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
     pushes what distinguishes a preset past the visible width, and 1242 patches that
     all begin "Samples from Mars - " are indistinguishable on screen. So each level
     is abbreviated to a short stable label and the library's echo is dropped out of
-    the preset name, leaving "SFM VS Keys Pads - Polaris Space Delay Soft D2".
-    Factory patch names run 9.5 characters on average and never exceed 18, which is
-    the yardstick this is aiming at.
+    the preset name, leaving "SFM VS Keys Pads - Polaris Space Delay Soft D2" — still
+    well past `_MAX_NAME`, so `_fit_max_name` does the last mile: drop/shrink the
+    prefix before it touches the name.
     """
     labels = _prefix_labels(path.name, sub)
     name = _strip_label_echo(safe_name, labels) or safe_name
     prefix = " ".join(_abbreviate(label) for label in labels)
-    joined = f"{prefix} - {name}" if prefix else name
+    joined = _fit_max_name(prefix, name)
     return _strip_periods(safe_component(joined))
 
 
