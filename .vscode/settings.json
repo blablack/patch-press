@@ -10,6 +10,7 @@
     "python.terminal.activateEnvironment": false,
     "files.exclude": {
         "**/__pycache__": true,
-        "**/.venv": true
+        "**/.venv": true,
+        "**/.ruff_cache": true
     }
 }
