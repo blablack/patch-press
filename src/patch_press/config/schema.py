@@ -136,6 +136,15 @@ class OutputConfig:
     # source's own organisation (e.g. a u-he bank/author path "1 BASS" or
     # "THIRD PARTY/Mr Wobble"). Empty = filed directly under the collection.
     subfolder: str = ""
+    # Bento only: the flat patch folder name under SampInst/OneShots/Wavetable,
+    # verbatim (the exporter still sanitises it). Empty = derived from collection +
+    # subfolder + name by the exporter's shortening rules, which is the usual case.
+    # Set by `BentoExporter.assign_output_folders` when a whole set of presets is
+    # named together so two that shorten alike get told apart, and by a batch driver
+    # that persists that assignment so every later per-preset lookup agrees with it
+    # (prepare-sd-cards writes it into the scanned config). Also the manual escape
+    # hatch for a clash nothing automatic can resolve.
+    folder: str = ""
 
 
 @dataclass

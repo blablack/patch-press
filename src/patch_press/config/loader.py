@@ -138,6 +138,7 @@ def load_config(path: Path) -> RunConfig:
     output = OutputConfig(
         name=out["name"],
         subfolder=out.get("subfolder", ""),
+        folder=out.get("folder", ""),
     )
 
     wt = raw.get("wavetable")

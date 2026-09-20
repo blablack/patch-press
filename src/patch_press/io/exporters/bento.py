@@ -26,7 +26,7 @@ the device firmware (`bento1.bin`) — no format guesswork:
   happily show it (confirmed on hardware: nested patches were visible but
   silently failed to load). So `output.name`, `output.subfolder` and the
   collection folder passed via `--path` all fold into one flat folder name
-  (` - `-joined) instead of nested directories — see `_flat_patch_folder`.
+  (` - `-joined) instead of nested directories — see `_patch_folder`.
 
 - Wavetables are a third root, `Wavetable` (a `wttrack`). The oscillator names its
   table in the cell's `filename`, exactly like a sample cell, and the WAV ships in the
@@ -61,7 +61,7 @@ from ._common import (
     write_sample_wav,
     write_wavetable_wav,
 )
-from .bento_index import derive_tags, update_index
+from .bento_index import derive_tags, said_by_tags, update_index
 from .bento_preview import PREVIEW_NAME, write_preview
 
 log = logging.getLogger(__name__)
@@ -176,7 +176,9 @@ _VERBATIM_LIMIT = 11
 # without an enforced cap, every preset out of one source folder shares the same
 # prefix, so once the joined name runs past what the row shows, they clip to an
 # identical-looking string and become indistinguishable on the device — the actual
-# bug this cap exists to prevent, not a cosmetic tidy-up.
+# bug this cap exists to prevent, not a cosmetic tidy-up. Spent on the name first
+# and then on as many of the innermost labels as fit (`_folder_candidates`); a name
+# that fills the row by itself overshoots it rather than get clipped.
 _MAX_NAME = 18
 
 _TOKEN_RE = re.compile(r"[0-9A-Za-z']+")
@@ -273,36 +275,65 @@ def _strip_label_echo(name: str, labels: list[str]) -> str:
     return name
 
 
-def _fit_max_name(prefix: str, name: str) -> str:
-    """Join prefix and name, shrinking the prefix toward nothing if the device can't
-    show it all. The name itself is never clipped.
+def _folder_candidates(collection: str, sub: list[str], safe_name: str) -> list[str]:
+    """Every folder name a patch could go by, shortest first.
 
-    The prefix is identical for every preset out of one source folder — it's context,
-    not identity. Under a tight budget it's the name that has to survive, because the
-    name is the only part that tells two presets in the same folder apart; a display
-    that clips the joined string at the prefix (the common case without this) leaves
-    every preset in a folder showing the same clipped text. So the name gets first
-    claim on the budget and the prefix gets whatever's left over, down to nothing —
-    literally nothing, not "whatever's left of the name": clipping the name instead
-    (an earlier version of this function did, via `name[:_MAX_NAME]`) reproduces on
-    the *software* side the exact bug this cap exists to fix on the hardware side —
-    two different presets ("TUC The Great Zorp I"/"II") silently landing on the same
-    folder name — and a name mangled mid-word ("HS Chord Bass - minor" -> "HS Chord
-    Bass - mi") is worse than a plain overlength name, which at least still reads.
-    So the device's row width is a soft target once the name alone already fills it,
-    not a hard byte budget worth breaking uniqueness or readability for.
+    Each candidate is the name behind a run of its innermost labels: the first is
+    the longest run that still fits `_MAX_NAME` (but always at least the folder the
+    preset sits in), and each one after adds the next label outward, up to the full
+    prefix. The name is never clipped and neither is a label — the prefix only ever
+    changes a whole label at a time, never mid-word.
+
+    The prefix is context, not identity — every preset out of one source folder
+    shares it — so under a tight budget it's the name that has to survive; a display
+    that clips the joined string at the prefix leaves every preset in a folder
+    showing the same text. Hence the name gets first claim on the budget and labels
+    go outermost-first: the collection tag is what a thousand patches share, the
+    innermost label is the one folder the preset is actually in.
+
+    Two things this must not do, both learned the hard way. It must not clip the
+    name (an earlier version did, via `name[:_MAX_NAME]`): "TUC The Great Zorp
+    I"/"II" silently landed on one folder, and "HS Chord Bass - mi" reads worse than
+    an overlength name. And it must not shrink the prefix to whatever characters are
+    left (the version after that did, via `prefix[:room]`, which produced "SFM Junos
+    B - Acid" and, once the name alone filled the row, no prefix at all): the kits
+    in `808 From Mars/Kits` and `Essential WAV/Drums/Kits/808` are both "01 Clean
+    Kit 01", and with the prefix gone the second one overwrote the first — the exact
+    silent collision the cap exists to prevent, moved one step left. Which label
+    tells two presets apart is not knowable one preset at a time (`Keys - E Piano`
+    is Junos *and* Mirage; `IH - 01 Bass Drum` is six packs), so the first candidate
+    is only a starting point: `assign_output_folders` walks a whole set up this list
+    until every name is unique. The row width is a soft target, not a byte budget
+    worth breaking uniqueness or readability for.
     """
-    sep = " - "
-    joined = f"{prefix}{sep}{name}" if prefix else name
-    if len(joined) <= _MAX_NAME or not prefix:
-        return joined
-    room_for_prefix = _MAX_NAME - len(name) - len(sep)
-    if room_for_prefix <= 0:
-        return name
-    return f"{prefix[:room_for_prefix]}{sep}{name}"
+    labels = _prefix_labels(collection, sub)
+    name = _strip_label_echo(safe_name, labels) or safe_name
+    if not labels:
+        return [_strip_periods(safe_component(name))]
+
+    def ladder(labels: list[str]) -> list[str]:
+        """Suffixes of `labels` behind the name, from the longest that fits `_MAX_NAME`
+        (at least one label) outward to the full run."""
+        runs = [f"{' '.join(labels[i:])} - {name}" for i in range(len(labels) - 1, -1, -1)]
+        fitting = [i for i, run in enumerate(runs) if len(run) <= _MAX_NAME]
+        return runs[fitting[-1] if fitting else 0 :]
+
+    # A folder that only says what the patch's tag already says (`1 BASS`, `02. Kits`,
+    # `Keys & Pads`) strips its echo out of the name above but is the last thing to
+    # earn a place in the prefix: the browser's tag filter is where that word does its
+    # work, and `Bass - HS Cable` beside a `Bass` tag spends a third of the row saying
+    # it twice. So the ladder runs the pack labels alone first (`Junos - E Piano`,
+    # `SFM Junos - E Piano`) and only then the full run with the tag folders back in
+    # (`Keys - E Piano`, …) — for the percussion hit whose tag folder is the one thing
+    # that tells it from its neighbour (`Claves/Clean`, `Cowbell/Clean`).
+    abbreviated = [_abbreviate(label) for label in labels]
+    untagged = [short for short, label in zip(abbreviated, labels) if not said_by_tags(label)]
+    runs = ladder(untagged) if untagged else []
+    runs += [run for run in ladder(abbreviated) if run not in runs]
+    return [_strip_periods(safe_component(run)) for run in runs]
 
 
-def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
+def _patch_folder(output: OutputConfig, path: Path) -> str:
     """The single folder name a Bento patch lives in under SampInst/OneShots.
 
     A real card (`Patches/SampInst/*`, `Patches/OneShots/*`) never nests patches in
@@ -320,14 +351,62 @@ def _flat_patch_folder(path: Path, sub: list[str], safe_name: str) -> str:
     all begin "Samples from Mars - " are indistinguishable on screen. So each level
     is abbreviated to a short stable label and the library's echo is dropped out of
     the preset name, leaving "SFM VS Keys Pads - Polaris Space Delay Soft D2" — still
-    well past `_MAX_NAME`, so `_fit_max_name` does the last mile: drop/shrink the
-    prefix before it touches the name.
+    well past `_MAX_NAME`, so `_folder_candidates` does the last mile, landing on
+    "VS - Polaris Space Delay Soft D2" unless another preset already goes by that.
+
+    An explicit `output.folder` wins outright: it is either a caller persisting the
+    set-wide assignment made by `assign_output_folders`, or a hand-picked override.
     """
-    labels = _prefix_labels(path.name, sub)
-    name = _strip_label_echo(safe_name, labels) or safe_name
-    prefix = " ".join(_abbreviate(label) for label in labels)
-    joined = _fit_max_name(prefix, name)
-    return _strip_periods(safe_component(joined))
+    if output.folder:
+        return _strip_periods(safe_component(output.folder))
+    return _folder_candidates(path.name, subfolder_parts(output.subfolder), safe_component(output.name))[0]
+
+
+def assign_output_folders(items: Sequence[tuple[OutputConfig, Path]], *, respect_existing: bool = True) -> None:
+    """Name a whole set of patches so no two share a folder, writing `output.folder`.
+
+    Every item starts at its shortest candidate (see `_folder_candidates`); each
+    round, every member of a clash — all of them, not just one, so the two `E Piano`s
+    read `Junos Keys - E Piano` and `Mirage Keys - E Piano` rather than one of them
+    keeping the bare name — steps up to its next-longer candidate, until nothing
+    clashes or nobody can step further. The result depends only on the set, so the
+    same corpus always gets the same names; adding a pack can lengthen an existing
+    name that just gained a lookalike, which is the price of not fixing names for
+    life at first sight.
+
+    With `respect_existing` an item that already has a `folder` keeps it and merely
+    claims that name (a manual override, or a driver's persisted assignment being
+    re-checked); without, every folder is reassigned from scratch — for a driver that
+    owns the field and wants the symmetric result after the corpus changed. What is
+    left clashing afterwards (two presets identical down to the full source path) is
+    for `runner/batch.py`'s `_check_output_collisions` to refuse.
+    """
+    fixed: dict[int, str] = {}
+    levels: dict[int, list[str]] = {}
+    for i, (output, path) in enumerate(items):
+        if respect_existing and output.folder:
+            fixed[i] = _strip_periods(safe_component(output.folder))
+        else:
+            levels[i] = _folder_candidates(path.name, subfolder_parts(output.subfolder), safe_component(output.name))
+    level = dict.fromkeys(levels, 0)
+    while True:
+        claimed: dict[str, list[int]] = defaultdict(list)
+        for i, name in fixed.items():
+            claimed[name].append(i)
+        for i, k in level.items():
+            claimed[levels[i][k]].append(i)
+        stepped = False
+        for name, members in claimed.items():
+            if len(members) < 2:
+                continue
+            for i in members:
+                if i in level and level[i] < len(levels[i]) - 1:
+                    level[i] += 1
+                    stepped = True
+        if not stepped:
+            break
+    for i, k in level.items():
+        items[i][0].folder = levels[i][k]
 
 
 def _params(parent, **kw) -> None:
@@ -634,12 +713,28 @@ class BentoExporter:
         the sample set's category at export time), so every candidate patch folder is
         listed — callers treat "any exists" as done.
         """
-        sub = subfolder_parts(output.subfolder)
-        flat = _flat_patch_folder(path, sub, safe_component(output.name))
+        flat = _patch_folder(output, path)
         return [
             path.parent.joinpath(_PATCH_ROOT, kind, flat, "patch.xml")
             for kind in (_TYPE_MULTISAMPLE, _TYPE_KIT, _TYPE_WAVETABLE)
         ]
+
+    @classmethod
+    def output_folder_candidates(cls, output: OutputConfig, path: Path) -> list[str]:
+        """Every folder name this preset could be given, shortest first — see
+        `_folder_candidates`. The one it *is* given is `expected_outputs`' when its
+        `folder` is set, else whichever of these `assign_output_folders` settles on
+        once the rest of the corpus is in view. For a driver that has to recognise a
+        preset by its eventual folder name before it has been scanned (prepare-sd-cards
+        stages only the Diva presets its card wants): match against all of them."""
+        return _folder_candidates(path.name, subfolder_parts(output.subfolder), safe_component(output.name))
+
+    @classmethod
+    def assign_output_folders(cls, items: Sequence[tuple[OutputConfig, Path]], *, respect_existing: bool = True) -> None:
+        """Name a set of presets together so none share a folder — see the module-level
+        `assign_output_folders`. The one exporter hook of its kind: only the Bento folds
+        a whole path into one shortened name, so only it can shorten two alike."""
+        assign_output_folders(items, respect_existing=respect_existing)
 
     @classmethod
     def notes_used(cls, notes: Sequence[int]) -> list[int]:
@@ -680,7 +775,7 @@ class BentoExporter:
             Category.WAVETABLE: _TYPE_WAVETABLE,
         }.get(sset.category, _TYPE_MULTISAMPLE)
         sub = subfolder_parts(config.subfolder)
-        flat = _flat_patch_folder(path, sub, safe_component(config.name))
+        flat = _patch_folder(config, path)
         patch_dir = path.parent.joinpath(_PATCH_ROOT, kind, flat)
         wav_paths = _write_wavs(sset, patch_dir)
 

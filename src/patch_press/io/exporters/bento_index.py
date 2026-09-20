@@ -23,7 +23,7 @@ backslash-separated paths.
 import fcntl
 import logging
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from xml.sax.saxutils import escape, unescape
 
@@ -92,6 +92,19 @@ _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 def _words(text: str) -> list[str]:
     return _TOKEN_RE.findall(_CAMEL_RE.sub(" ", text).lower())
+
+
+def said_by_tags(label: str) -> bool:
+    """True if every word of a source folder label is a tag keyword — `1 BASS`,
+    `01. Keys & Pads`, `02. Kits`, `Orchestral Brass` — so the tag filter already
+    says everything the label does. `bento.py` leaves such a label out of the
+    patch folder name: a card row is 18 characters, and `Bass - HS Cable` next to a
+    `Bass` tag spends six of them saying the same thing twice. A label with any word
+    the vocabulary doesn't know (`Individual Hits`, `Vinyl Synths`, `808 Bass`) is
+    kept whole — dropping just its tag words would turn `Vinyl Synths` and `Vinyl
+    Drums` into the same `Vinyl`."""
+    words = _words(label)
+    return bool(words) and all(w in _WORD_FOR_TAG for w in words)
 
 
 def derive_tags(category: Category, collection: str, sub: list[str], name: str) -> list[str]:
@@ -187,6 +200,37 @@ def update_index(patch_root: Path, patch_path: str, tags: list[str]) -> None:
         fh.seek(0)
         fh.truncate()
         fh.write(_render(entries))
+
+
+def move_entries(patch_root: Path, moves: Mapping[str, str]) -> int:
+    """Re-key patches' tags, `{old path: new path}`, in `<patch_root>/patchindex.xml`.
+
+    For a driver that renames built patch folders in place (the shortened folder
+    name a preset goes by can change when the corpus around it does — see
+    `bento.py`'s `assign_output_folders`) rather than rebuilding them: the tags were
+    derived from the preset's source and category, not its folder, so they carry
+    over unchanged. All the moves land in one read-modify-write, every old entry
+    lifted out before any new one is written, so two presets trading names keep
+    their own tags. Same lock and same best-effort stance as `update_index`. Returns
+    how many entries actually moved — a path with no entry (an index never written,
+    a patch built before tags existed) just stays untagged, as it was.
+    """
+    index = patch_root / _INDEX_NAME
+    if not index.exists() or not moves:
+        return 0
+    with open(index, "r+b") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        raw = fh.read()
+        if raw.strip() and b"<patchmetadata" not in raw:
+            log.warning("%s is not a patch index — leaving it alone", index)
+            return 0
+        entries = _parse(raw)
+        lifted = {new: entries.pop(old) for old, new in moves.items() if old in entries}
+        entries.update(lifted)
+        fh.seek(0)
+        fh.truncate()
+        fh.write(_render(entries))
+    return len(lifted)
 
 
 def sync_index(

@@ -124,9 +124,15 @@ Controls the [analysis pipeline](pipeline.html).
 ```yaml
 output:
   name: MyPreset          # required
+  subfolder: "1 BASS"     # optional: on-card subfolder tree under the collection
+  folder: "Bass - MyPreset"  # optional, Bento only: the flat patch folder name, verbatim
 ```
 
 `output.name` is what the preset is called. It becomes the XML filename, the SAMPLES subfolder, and the display name inside Deluge browsers. Spaces and slashes are sanitized to underscores.
+
+`output.subfolder` mirrors the source's own organisation (a u-he bank, a library's category folder) as directories under the collection — on the Deluge and Polyend as real subdirectories, on the Bento folded into the one flat folder name.
+
+`output.folder` is Bento-specific: the patch folder name under `SampInst/OneShots/Wavetable`, used as-is. Normally unset — the exporter derives a short name from collection + `subfolder` + `name`, and `patch-press batch` names its whole set together so two presets that shorten alike are told apart, writing the choice here in memory. A driver that builds a corpus across several batches persists the set-wide assignment into this field so every per-preset lookup agrees (prepare-sd-cards does); it is also the manual override for a clash nothing automatic resolves. See `docs/outputs/bento.md`, "Fitting the row".
 
 ---
 
