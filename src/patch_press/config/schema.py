@@ -66,7 +66,7 @@ class WavetableConfig:
     signed-32-bit param range.
     """
 
-    archetype: str  # pad | pluck | bass | lead | drone | evolving_pad
+    archetype: str  # sustaining | evolving | percussive
     wt_position: float
     lfo2_rate: float
     lfo2_depth: float
@@ -76,6 +76,11 @@ class WavetableConfig:
     sustain: float
     release: float
     filter_type: str = "lpf"
+    # Timbre word fed to the Bento tag deriver (drone|evolving|bass|lead|pad). Kept
+    # separate from `archetype` on purpose: brightness/harmonic character describe how
+    # a table sounds, which is a fair browser tag, but say nothing about how it should
+    # be played. See analysis/wavetable.py.
+    tag_hint: str = "pad"
 
 
 @dataclass

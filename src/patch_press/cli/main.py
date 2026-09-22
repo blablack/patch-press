@@ -643,9 +643,11 @@ def main() -> None:
     )
     scan_wavetables_p.add_argument(
         "--archetype",
-        choices=["pad", "pluck", "bass", "lead", "drone", "evolving_pad"],
+        choices=["sustaining", "evolving", "percussive"],
         default=None,
-        help="Override auto-detected archetype; default: auto (spectral analysis per file)",
+        help="Force one archetype for every file. Auto-detection only ever picks "
+             "sustaining or evolving; `percussive` is available here only, because "
+             "nothing in a single-cycle table says a patch should be played short.",
     )
 
     # patch-press assemble-kits "909_from_mars/Individual Hits" configs/909Assembled

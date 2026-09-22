@@ -34,20 +34,38 @@ Downmixing is a real loss for material designed as stereo — Polyend's own ster
 
 The archetype analysis always runs on the mono sum, on every target.
 
+## What the analysis measures
+
+Each 2048-sample frame is exactly one cycle, so an FFT of it lands harmonic *k* precisely on bin *k* — no pitch detection needed, and **no analysis window** (a window only exists to hide the discontinuity of a non-periodic frame; here there isn't one, and windowing actively smears each harmonic into its neighbours). Four features come out of that:
+
+| Feature | What it is | Units |
+|---|---|---|
+| **brightness** | mean spectral centroid | harmonics (a value of 139 = energy centred on the 139th harmonic) |
+| **movement** | how far the centroid travels across the frames | harmonics |
+| **tonality** | share of energy in the 32 strongest bins | 0–1 (square ≈ 0.99, white noise ≈ 0.14) |
+| **hollowness** | odd harmonics from the 3rd up vs the even ones | 0–1 (0.5 = balanced, →1 = odd-only/hollow) |
+
 ## Archetype detection
 
-`scan-wavetables` analyzes each file's per-frame spectral content — brightness (centroid), flatness (noise-vs-tonal), odd/even harmonic ratio, timbral variance across the frames — and picks one of six archetypes. Each archetype maps to a canned set of Deluge parameters (envelope shape, filter cutoff, LFO2 rate/depth, starting WT position).
+The archetype sets the **envelope and filter shape**. There are three, but auto-detection only ever picks two:
 
-| Archetype | When it's picked | Vibe |
+| Archetype | When it's picked | Envelope |
 |---|---|---|
-| **drone** | High spectral flatness (noisy, inharmonic frames) | Textural, FX, no clear pitch |
-| **evolving_pad** | Large timbre range across frames (frames very different) | Long attack, table sweep provides the movement |
-| **pluck** | Bright + odd-harmonic-dominant | Fast attack, no sustain, hollow character |
-| **lead** | Bright + not odd-dominant | Fast attack, sustained, warm |
-| **bass** | Dark + even-harmonic-dominant | Snappy, low-end focused |
-| **pad** | Everything else (default) | Slow attack, long release |
+| **sustaining** | default (~72% of the reference corpus) | responsive attack, high sustain — a patch that speaks when you press the key |
+| **evolving** | `tonality < 0.65` (noise/texture, no clear pitch) **or** `movement > 150` harmonics | long attack, full sustain, long release, table sweep provides the motion |
+| **percussive** | **never auto-detected** — `--archetype percussive` only | fast attack, no sustain |
 
-The heuristics were calibrated by ear against the Echo Sound Works Core Tables corpus.
+`percussive` is deliberately not inferred. Timbre and playing style are independent axes: a bright hollow wave is equally a clav, a reed lead or a pad, and nothing in a single-cycle table says which. The one feature that could plausibly have split it — hollowness — is *unimodal* across the 701-file reference corpus (a single spike at 0.48 with no second cluster), so any threshold on it would have been arbitrary. It stays available as a template you can force on a folder you already know is plucky.
+
+A file whose deciding feature lands within 5% of its threshold is flagged `REVIEW` in the generated config rather than silently committed — about 7% of the reference corpus. Those are the ones worth auditioning.
+
+## Timbre tags
+
+Separately from the archetype, the scan writes a `tag_hint` — one of `drone` / `evolving` / `bass` / `lead` / `pad` — describing how the table *sounds*. This is what brightness and harmonic character legitimately measure, even though they say nothing about how the patch should be played. It's used by the [Bento](../outputs/bento.html) exporter, which feeds it to its tag deriver as if it were a word in the preset name (`pad`/`bass`/`lead` map to themselves, `drone`/`evolving` to `Atmosphere`). A real folder label always wins; this only speaks when nothing else does.
+
+### Calibration status
+
+The thresholds are quantiles of a 701-file reference corpus (Liam Wavetables + Polyend Wavetables) — chosen so the corpus actually spreads across them, not picked in the abstract. They have **not** been ear-validated on hardware yet; treat them the same as the loop-detection constants elsewhere in this codebase. The `REVIEW` flags are the shortlist to start from.
 
 ## Config shape
 
@@ -57,16 +75,17 @@ source:
   path: /path/to/Warm Pad 01.wav
 
 wavetable:
-  archetype: pad
+  archetype: sustaining
   wt_position: 0.15         # starting frame (0.0 = first, 1.0 = last)
   lfo2_rate: 0.30
-  lfo2_depth: 0.60
+  lfo2_depth: 0.60         # clamped so wt_position + lfo2_depth <= 1.0
   filter_cutoff: 0.55
-  attack: 0.70
-  decay: 0.50
+  attack: 0.10
+  decay: 0.35
   sustain: 0.90
-  release: 0.75
+  release: 0.35
   filter_type: lpf
+  tag_hint: pad            # browser tag only; does not affect the sound
 
 output:
   name: WarmPad01
@@ -80,7 +99,7 @@ If the auto-detection picked something you disagree with, either:
 
 - **Re-scan with `--archetype`** to force one archetype across the whole folder:
   ```bash
-  patch-press scan-wavetables "~/wavetables/Basses" configs/Basses --archetype bass
+  patch-press scan-wavetables "~/wavetables/Plucks" configs/Plucks --archetype percussive
   ```
 - Or **edit the YAML** for that one file (`archetype:` and the parameter block) and re-run `sample`.
 
@@ -88,7 +107,7 @@ If the auto-detection picked something you disagree with, either:
 
 | Option | Default | What it does |
 |---|---|---|
-| `--archetype pad\|pluck\|bass\|lead\|drone\|evolving_pad` | auto | Force a single archetype for every file in the folder. |
+| `--archetype sustaining\|evolving\|percussive` | auto | Force a single archetype for every file in the folder. This is the only way to get `percussive`. |
 
 ## On the SD card
 

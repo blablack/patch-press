@@ -1265,6 +1265,9 @@ def scan_wavetables(
             result.archetype = archetype
             result.attack, result.decay, result.sustain, result.release = t["attack"], t["decay"], t["sustain"], t["release"]
             result.filter_type = t["filter_type"]
+            # A forced archetype is the user overruling the detector, so its own
+            # "this was marginal" flags no longer say anything useful.
+            result.flags = [f for f in result.flags if "marginal" not in f]
 
         review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
         content = (
@@ -1284,6 +1287,7 @@ def scan_wavetables(
             f"  sustain: {result.sustain:.4f}\n"
             f"  release: {result.release:.4f}\n"
             f"  filter_type: {result.filter_type}\n"
+            f"  tag_hint: {result.tag_hint}\n"
             f"\n"
             f"output:\n"
             f'  name: "{preset_name}"\n'

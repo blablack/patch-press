@@ -154,6 +154,7 @@ def load_config(path: Path) -> RunConfig:
             sustain=wt["sustain"],
             release=wt["release"],
             filter_type=wt.get("filter_type", "lpf"),
+            tag_hint=wt.get("tag_hint", "pad"),
         )
         if wt is not None
         else None

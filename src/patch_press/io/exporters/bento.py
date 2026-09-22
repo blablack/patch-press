@@ -657,19 +657,22 @@ def _kit_pads(sset: SampleSet, name: str) -> tuple[dict[int, list[Sample]], list
 
 
 def _tag_name(sset: SampleSet, name: str) -> str:
-    """The preset name the tag index reads, with a wavetable's archetype appended.
+    """The preset name the tag index reads, with a wavetable's timbre hint appended.
 
     A wavetable's folder path says nothing about the sound — the libraries are flat
     banks of table names ("Liam Wavetables", "Polyend Wavetables") — but the scan
-    already classified each file into an archetype, and four of the six are literally
-    Bento tag words (pad, bass, lead, drone -> Atmosphere). Feeding it in as if it were
-    part of the name lets derive_tags apply its normal precedence: a real folder label
-    still wins, and this only speaks when nothing else does.
+    measured its timbre, and every `tag_hint` value is a Bento tag word (pad, bass,
+    lead -> themselves, drone/evolving -> Atmosphere). Feeding it in as if it were part
+    of the name lets derive_tags apply its normal precedence: a real folder label still
+    wins, and this only speaks when nothing else does.
+
+    This reads `tag_hint`, not `archetype`: the archetype is an envelope choice with
+    only three values, none of which describe a timbre. See analysis/wavetable.py.
     """
     if sset.category != Category.WAVETABLE:
         return name
     wt = sset.source_metadata.get("wavetable")
-    return f"{name} {wt.archetype.replace('_', ' ')}" if wt is not None else name
+    return f"{name} {wt.tag_hint}" if wt is not None else name
 
 
 def _centered_ranges(values: Sequence[int], lo: int, hi: int) -> list[tuple[int, int]]:

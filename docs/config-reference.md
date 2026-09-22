@@ -142,7 +142,8 @@ Only present in wavetable configs. Every 0–1 parameter is a plain fraction tha
 
 | Key | Type | What it does |
 |---|---|---|
-| `archetype` | `str` | `pad` / `pluck` / `bass` / `lead` / `drone` / `evolving_pad` |
+| `archetype` | `str` | `sustaining` / `evolving` / `percussive` (envelope + filter shape) |
+| `tag_hint` | `str` | `drone` / `evolving` / `bass` / `lead` / `pad` — browser tag only, no effect on the sound |
 | `wt_position` | `float` | Starting frame index (0.0 = first, 1.0 = last). |
 | `lfo2_rate` | `float` | LFO2 speed (drives the wavetable position sweep). |
 | `lfo2_depth` | `float` | LFO2 modulation depth. |
