@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from ...analysis.drumkit import _PRIORITY, classify_instrument
+from ...analysis.drumkit import _PRIORITY, canonical_first, classify_instrument
 from ...analysis.drumkit import sort_key as _drumkit_sort_key
 from ...analysis.pitch import NOTE_NAMES
 from ...config.schema import LibrarySourceConfig
@@ -329,10 +329,14 @@ class LibraryAdapter:
         A category with only one file is folded back into the folder's dominant
         category rather than split out on its own, so a single coincidentally-matching
         filename can't fracture an otherwise uniform folder.
+
+        A folder of `_V<NN>_RR<NN>` takes (Just Add Drums) is first collapsed to one file
+        per instrument by `_collapse_velocity_layers`, same as a flat drumkit folder --
+        otherwise the pad plays whichever take sorts first, V01: the softest.
         """
         pads: list[tuple[tuple[int, str], str, list[Path]]] = []
         for subdir in subdirs:
-            wavs = sorted(subdir.glob("*.wav", case_sensitive=False))
+            wavs = sorted(_collapse_velocity_layers(sorted(subdir.glob("*.wav", case_sensitive=False))))
             by_category: dict[str, list[Path]] = defaultdict(list)
             for wav in wavs:
                 by_category[classify_instrument(wav.stem)].append(wav)
@@ -348,11 +352,14 @@ class LibraryAdapter:
                     f"collapsed them into one"
                 )
                 for cat, files in major.items():
+                    files = [files[i] for i in canonical_first(cat, [f.stem for f in files])]
                     pads.append(((_PRIORITY[cat], subdir.name), f"{subdir.name}/{cat}", files))
             else:
                 # Uniform folder, or too little signal to split confidently (every
                 # category but one is a singleton): one pad, folder name drives both
                 # the label and the sort category — unchanged from before.
+                cat = classify_instrument(subdir.name)
+                wavs = [wavs[i] for i in canonical_first(cat, [w.stem for w in wavs])]
                 pads.append((_drumkit_sort_key(subdir.name), subdir.name, wavs))
 
         pads.sort(key=lambda p: p[0])

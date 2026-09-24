@@ -47,6 +47,8 @@ Example: `note060_T120_V100_RR1.wav` = MIDI 60 (C4), tempo 120 BPM, velocity 100
 
 A sample that came from a library keeps its own filename instead, and when the analysis left its audio untouched the vendor's file is **copied byte-for-byte** rather than re-encoded — original bit depth, channel count and metadata chunks intact. See [Shipping the vendor's own file](../inputs/sample-libraries.html#shipping-the-vendors-own-file).
 
+Every WAV is checked against what the Deluge firmware will actually load: PCM at 8/16/24/32 bits or 32-bit float, mono or stereo, 5–96 kHz, and a plain `fmt ` header. The firmware refuses WAVE_FORMAT_EXTENSIBLE even around ordinary 24-bit PCM, so a file whose only fault is that header gets it rewritten as plain PCM/float, with the audio and every other chunk left byte-identical. A file the Deluge genuinely can't play is transcoded: extra channels folded to stereo, and a sample rate outside the range halved or doubled until it fits, with the preset's loop points scaled to match.
+
 ## XML: multisample synth
 
 ```xml

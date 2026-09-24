@@ -1,12 +1,13 @@
 """Path and WAV helpers shared by all exporters."""
 
 import logging
-import shutil
 from pathlib import Path
 
+import numpy as np
 import soundfile as sf
 
 from ...model.sample import Sample
+from ..wav_format import conform
 
 log = logging.getLogger(__name__)
 
@@ -64,16 +65,27 @@ def write_sample_wav(sample: Sample, dest: Path) -> None:
     or two: a capture the scan measured as mono (`capture.mono`, see analysis/channels.py)
     arrives here already folded, and writing its duplicate channel out would double the
     file on the card for a signal the plugin never made stereo.
+
+    Either way the file then goes through `wav_format.conform`, because "the vendor's
+    own file" is not always one the device will load: a WAVE_FORMAT_EXTENSIBLE header
+    gets rewritten as plain PCM/float (audio untouched), and a format the device can't
+    play at all is transcoded. Both target devices get the Deluge's rules, the stricter
+    of the two as far as is known. A transcode that had to change the sample rate
+    scales `sample.loop_points` to match, so the exporter's loop positions (read after
+    this) still land on the same audio.
     """
     src = sample.metadata.get("source_file")
     if sample.metadata.get("audio_verbatim") and src and Path(src).suffix.lower() == ".wav":
-        shutil.copy2(src, dest)
-        return
-    data = sample.audio.data
-    # Channel 0, not the mean: the adapter folded both channels to the same signal, so
-    # they are equal by construction and averaging would only add rounding.
-    frames = data[0] if sample.metadata.get("mono") else data.T
-    sf.write(str(dest), frames, sample.audio.sample_rate)
+        ratio = conform(Path(src), dest)
+    else:
+        data = sample.audio.data
+        # Channel 0, not the mean: the adapter folded both channels to the same signal, so
+        # they are equal by construction and averaging would only add rounding.
+        frames = data[0] if sample.metadata.get("mono") else data.T
+        sf.write(str(dest), frames, sample.audio.sample_rate)
+        ratio = conform(dest, dest)
+    if ratio != 1.0 and sample.loop_points:
+        sample.loop_points = tuple(round(p * ratio) for p in sample.loop_points)
 
 
 def sample_wav_name(sample: Sample, tempo_bpm: float, used_names: set[str]) -> str:
@@ -152,10 +164,24 @@ def write_wavetable_wav(src: Path, dest: Path) -> None:
     chunk carried across. (The Polyend Tracker Mini does play stereo wavetables, so the
     .pti export of the same config keeps both channels; this narrowing is for the two
     devices that read a WAV off the card.)
+
+    A mono source with no `clm` chunk and a trailing partial window can't be copied
+    either: without the chunk, the Deluge firmware accepts a file as a wavetable only
+    if its length is an exact multiple of 2048 (`audio_file.cpp`: `if
+    (audioDataLengthSamples & 2047) return FILE_NOT_LOADABLE_AS_WAVETABLE`), and
+    Polyend's stock tables all ship 255 windows plus a 2027-sample tail. So it gets the
+    same truncation. With a `clm` chunk the firmware skips that check and floors to
+    whole cycles itself, so those still copy verbatim.
+
+    A table that goes through that rewrite is also normalized to full scale: it is
+    no longer the vendor's file either way, and a quiet table makes a quiet preset.
     """
     info = sf.info(str(src))
-    if info.channels == 1:
-        shutil.copy2(src, dest)
+    if info.channels == 1 and (info.frames % _WT_WINDOW == 0 or _read_chunk(src, b"clm ") is not None):
+        # Copied through `conform` so an EXTENSIBLE header is still made loadable (the
+        # rewrite keeps every other chunk, clm included). A table is played by cycle,
+        # not at its sample rate, so no ratio to act on.
+        conform(src, dest)
         return
 
     data, sr = sf.read(str(src), dtype="float64", always_2d=True)
@@ -163,6 +189,12 @@ def write_wavetable_wav(src: Path, dest: Path) -> None:
     usable = (len(mono) // _WT_WINDOW) * _WT_WINDOW
     if usable:
         mono = mono[:usable]
+    # Being re-encoded anyway, so bring it up to full scale: a wavetable oscillator
+    # plays the table at its own level, and Polyend's stock tables sit at -6 dBFS
+    # (a downmix can lose more), ~10 dB quieter than a typical Serum-style table.
+    peak = float(np.abs(mono).max()) if len(mono) else 0.0
+    if peak > 0.0:
+        mono = mono / peak
     sf.write(str(dest), mono, sr, subtype=info.subtype)
     clm = _read_chunk(src, b"clm ")
     if clm is not None:

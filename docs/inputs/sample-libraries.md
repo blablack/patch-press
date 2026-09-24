@@ -143,7 +143,7 @@ So `--audio verbatim` (the default for melodic libraries) writes `trim: false` a
 
 Drum kits default to `--audio processed` instead. A pad is expected to hit full scale and be balanced with the pad's own volume, which is what the `drums` profile's per-sample normalize does and what the vendors mostly don't — measured across this corpus a kit folder needs a median +15 dB to get there. Pass `--audio verbatim` for a kit library that is already levelled.
 
-`--audio processed` on a melodic library restores the old behaviour: trim to −60 dBFS and a per-set gain to −1 dBFS. Across Samples From Mars that gain is a median +5 dB, so this is the flag to reach for if the verbatim presets sit too quiet next to your rendered ones.
+`--audio processed` on a melodic library restores the old behaviour: trim the silence below −60 dB (relative to each sample's own peak) and a per-set gain to −1 dBFS. Across Samples From Mars that gain is a median +5 dB, so this is the flag to reach for if the verbatim presets sit too quiet next to your rendered ones.
 
 ## Which type is this?
 

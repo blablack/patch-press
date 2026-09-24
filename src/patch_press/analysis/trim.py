@@ -10,10 +10,19 @@ def trim_bounds(buf: AudioBuffer, threshold_db: float = -60.0) -> tuple[int, int
 
     Separated from trim_silence so callers that need to map indices from the original
     audio into the trimmed audio (e.g. a known note-off position) can shift by `lead`.
+
+    `threshold_db` is relative to the buffer's own peak, not to full scale. An absolute
+    -60 dBFS cut assumed every source peaks near 0 dBFS, and raw multitrack libraries
+    don't: Just Add Drums' soft velocity layers peak around -45 dBFS, so a crash cymbal
+    that rings for 4.6 s was cut after 0.23 s, once it fell a mere 15 dB. For a source
+    that does peak near full scale the two readings are the same cut.
     """
-    threshold = 10 ** (threshold_db / 20.0)
     mono = buf.data.mean(axis=0)
     n = len(mono)
+    peak = float(np.abs(mono).max()) if n else 0.0
+    if peak == 0.0:
+        return 0, n
+    threshold = peak * 10 ** (threshold_db / 20.0)
 
     lead = 0
     for i in range(0, n, _FRAME):

@@ -16,6 +16,7 @@ block.
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 
 _CATEGORY_ORDER = [
     "kick", "snare", "hat_closed", "hat_open",
@@ -80,7 +81,14 @@ def classify_instrument(stem: str) -> str:
     still matches 'CRASH'/'TOM' — a very common vendor convention for multiple
     takes of the same piece — without weakening any existing exact match.
     """
-    raw = {t.upper() for t in _TOKEN_RE.findall(stem)}
+    ordered = [t.upper() for t in _TOKEN_RE.findall(stem)]
+    # "Bass Drum" as two words is a kick ("Bass Drum 707"), and so is Drumtrax's
+    # "Bass Drumtrax 05", the machine's name being a pun on it. BASS on its own is
+    # NOT a kick token: Pulsar, Perkons and Vinyl SP kits all carry synth-bass hits
+    # named "Bass ...", which belong with the rest of the tonal extras.
+    if any(a == "BASS" and b.startswith("DRUM") for a, b in pairwise(ordered)):
+        return "kick"
+    raw = set(ordered)
     tokens = set(raw)
     for t in raw:
         stripped = t.rstrip("0123456789")
@@ -112,6 +120,28 @@ def classify_instrument(stem: str) -> str:
         return "cymbal_crash"
 
     return "other"
+
+
+# Words that name a category outright, as opposed to a variant filed under it:
+# CHINA and SPLASH classify as crash, but a pad labelled crash should play an actual
+# crash when the folder has one (Just Add Drums keeps its china beside CRASH1/CRASH2,
+# and "CHINA" sorts first).
+_CANONICAL = {"cymbal_crash": {"CRASH", "CRAS"}}
+
+
+def canonical_first(category: str, stems: list[str]) -> list[int]:
+    """Indices of `stems` reordered so a file named with the category's own word
+    comes first, keeping the given order otherwise. Only crash has variants
+    worth demoting today; every other category comes back unchanged."""
+    words = _CANONICAL.get(category)
+    if not words:
+        return list(range(len(stems)))
+
+    def names_it(stem: str) -> bool:
+        toks = {t.upper() for t in _TOKEN_RE.findall(stem)}
+        return bool(words & (toks | {t.rstrip("0123456789") for t in toks}))
+
+    return sorted(range(len(stems)), key=lambda i: not names_it(stems[i]))
 
 
 def sort_key(stem: str) -> tuple[int, str]:
