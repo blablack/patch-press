@@ -14,7 +14,7 @@ from ..config.schema import (
 from ..io.adapters.bitwig import BitwigAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.exporters import get_exporter
-from .pipeline import keeps_velocity_layers, notes_to_capture, run
+from .pipeline import keeps_velocity_layers, notes_to_capture, run, velocities_to_capture
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,11 @@ def _expected_notes(config: RunConfig, output_format: str) -> int:
     cap = config.capture
     src = config.source
     if isinstance(src, (VSTSourceConfig, CLAPSourceConfig)):
-        return len(notes_to_capture(config, output_format)) * len(cap.velocities) * cap.round_robins
+        return (
+            len(notes_to_capture(config, output_format))
+            * len(velocities_to_capture(config, output_format))
+            * cap.round_robins
+        )
     if isinstance(src, LibrarySourceConfig):
         try:
             return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)

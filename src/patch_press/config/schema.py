@@ -84,6 +84,27 @@ class WavetableConfig:
 
 
 @dataclass
+class PerformanceConfig:
+    """How the source preset is meant to be *played*, as opposed to how it sounds —
+    read once at scan time from the preset file itself (u-he `.h2p`: the VCC section's
+    voice mode and glide, and the author's `Usage:` note, see io/adapters/h2p.py) and
+    written into the config so it reads and hand-edits like every other scan decision.
+    None of it is audible in a capture: a render is one note at a time with the mod
+    wheel and aftertouch at rest, so it can only be handed to the target device as
+    settings. Defaults are what every preset got before this existed.
+    """
+
+    voice_mode: str = "poly"  # poly | mono | legato
+    # Glide time as a 0..1 fraction of the plugin's own glide knob. 0 = no glide.
+    glide: float = 0.0
+    # What the preset's author says the mod wheel / aftertouch do, reduced to the few
+    # intents an exporter can act on: vibrato | darken | brighten (mod wheel), vibrato
+    # (aftertouch). None = not stated, or stated as something none of those cover.
+    mod_wheel: Optional[str] = None
+    aftertouch: Optional[str] = None
+
+
+@dataclass
 class CaptureConfig:
     note_range: tuple[int, int] = (36, 96)
     note_step: int = 3
@@ -161,3 +182,4 @@ class RunConfig:
     name: str = ""
     category: str = "synth"
     wavetable: Optional[WavetableConfig] = None
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)

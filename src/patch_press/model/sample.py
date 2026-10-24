@@ -23,7 +23,8 @@ class Sample:
     # Sample index of the note-off (key release) in `audio`, when known. Set for
     # rendered VST/CLAP captures (we control how long the note is held); left None for
     # library samples, where the recording carries no note-off. Lets the envelope
-    # classifier measure the level *at release* instead of guessing from a fixed window.
+    # classifier measure the level *at release* instead of guessing from a fixed window,
+    # and the Deluge exporter time the plugin's release.
     note_off: Optional[int] = None
 
 

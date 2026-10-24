@@ -117,6 +117,7 @@ def _envelope_only(sample: Sample, bpm: float | None) -> Sample:
         loop_points=None,
         analysis=env.to_dict(),
         metadata=sample.metadata,
+        note_off=sample.note_off,
     )
 
 
@@ -224,6 +225,7 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
         loop_points=loop_points,
         analysis=analysis,
         metadata=metadata,
+        note_off=note_off,
     )
 
 
@@ -382,6 +384,7 @@ def analyze_sampleset(
                 loop_points=s.loop_points,
                 analysis={**s.analysis, "drum_type": classify_drum(s.audio)},
                 metadata=s.metadata,
+                note_off=s.note_off,
             )
             for s in analyzed
         ]

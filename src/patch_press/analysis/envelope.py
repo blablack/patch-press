@@ -450,3 +450,35 @@ def analyze_envelope(buf: AudioBuffer, bpm: float | None = None, note_off: int |
         classification=classification,
         modulation_period_samples=period_samples,
     )
+
+
+_RELEASE_REF_S = 0.1  # level the release is measured from: RMS over this span ending at note-off
+_RELEASE_FLOOR_DB = -50.0  # a note already this far below its peak at note-off has no release to time
+
+
+def release_time_s(buf: AudioBuffer, note_off: int | None, drop_db: float = 40.0) -> float | None:
+    """Seconds from note-off until the level has fallen `drop_db` below where it stood.
+
+    The plugin's own release, timed on a rendered capture (`Sample.note_off`). None when
+    there's nothing to time: no known note-off, a note-off outside the audio (trimmed
+    away), or a note that had already decayed to near-silence while held — a pluck whose
+    release setting never gets the chance to act. A release still above the threshold
+    where the audio ends returns the time to the end, a lower bound.
+    """
+    if note_off is None:
+        return None
+    mono = buf.to_mono()
+    sr = buf.sample_rate
+    ref_n = int(_RELEASE_REF_S * sr)
+    if note_off < ref_n or note_off >= len(mono):
+        return None
+    hop = int(0.01 * sr)
+    ref = float(np.sqrt(np.mean(mono[note_off - ref_n:note_off] ** 2)))
+    peak = float(np.abs(mono).max())
+    if ref <= peak * 10 ** (_RELEASE_FLOOR_DB / 20):
+        return None
+    threshold = ref * 10 ** (-drop_db / 20)
+    for pos in range(note_off, len(mono) - hop + 1, hop):
+        if np.sqrt(np.mean(mono[pos:pos + hop] ** 2)) < threshold:
+            return (pos - note_off) / sr
+    return (len(mono) - note_off) / sr

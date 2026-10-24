@@ -7,5 +7,7 @@ __pycache__
 .claude
 debug_scripts
 
+bento_firmware
 bento_original_data
+deluge_firmware
 deluge_original_data

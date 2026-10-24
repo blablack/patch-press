@@ -146,12 +146,27 @@ Only present in wavetable configs. Every 0–1 parameter is a plain fraction tha
 | `tag_hint` | `str` | `drone` / `evolving` / `bass` / `lead` / `pad` — browser tag only, no effect on the sound |
 | `wt_position` | `float` | Starting frame index (0.0 = first, 1.0 = last). |
 | `lfo2_rate` | `float` | LFO2 speed (drives the wavetable position sweep). |
-| `lfo2_depth` | `float` | LFO2 modulation depth. |
+| `lfo2_depth` | `float` | How much of the table LFO2 sweeps (0–1). Written as a patch-cable amount (0 to +50 on the Deluge), not a param. |
 | `filter_cutoff` | `float` | Initial low-pass cutoff. |
 | `attack` / `decay` / `sustain` / `release` | `float` | Amp-envelope shape. |
 | `filter_type` | `str` | `lpf` (only mode currently). |
 
 The archetype's canned parameter block is what `scan-wavetables` writes; you can edit any field independently.
+
+---
+
+## `performance`
+
+How the preset is meant to be played, rather than how it sounds. `scan-clap` writes it from a u-he `.h2p`'s voice settings and `Usage:` note (see [CLAP plugins](inputs/clap-plugins.html#how-the-preset-is-played-read-from-the-h2p)); it is omitted when everything is at its default.
+
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `voice_mode` | `str` | `poly` | `poly` / `mono` / `legato` |
+| `glide` | `float` | `0.0` | Glide time, 0–1 fraction of the plugin's glide knob. 0 = none. |
+| `mod_wheel` | `str` | unset | `vibrato` / `darken` / `brighten`: what the author says the wheel does. |
+| `aftertouch` | `str` | unset | `vibrato` |
+
+An output only acts on what it can reproduce; see each output's page.
 
 ---
 

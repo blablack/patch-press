@@ -29,6 +29,7 @@ from ..analysis.velocity import is_velocity_sensitive, velocity_timbre_shift
 from ..analysis.wavetable import _ARCHETYPES, classify_archetype
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
+from ..io.adapters.h2p import performance_yaml, read_performance
 from ..io.adapters.library import _parse_note_rr
 from ..io.adapters.vst import VSTAdapter
 from ..io.smpl import read_loop_points
@@ -239,6 +240,7 @@ def _config_yaml(
     note_hi: int,
     sample_rate: int,
     subfolder: str = "",
+    performance_lines: str = "",
 ) -> str:
     """Render the shared body of a scan-generated config YAML around a source-specific block."""
     review_line = f"# REVIEW: {', '.join(result.flags)}\n" if result.flags else ""
@@ -274,6 +276,7 @@ def _config_yaml(
     note_range_line = "" if profile == "drums" else f"  note_range: [{note_lo}, {note_hi}]\n"
     note_step_line = "" if profile == "drums" else f"  note_step: {note_step}\n"
     sample_rate_line = f"  sample_rate: {sample_rate}\n" if sample_rate != 48000 else ""
+    performance_block = f"\n{performance_lines}" if performance_lines else ""
     return (
         f"{review_line}"
         f"# {meta}\n"
@@ -294,6 +297,7 @@ def _config_yaml(
         f"output:\n"
         f'  name: "{preset_name}"\n'
         f"{subfolder_line}"
+        f"{performance_block}"
     )
 
 
@@ -340,6 +344,7 @@ def _probe_and_classify_preset(
     sustain_duration_s: float,
     profile: str | None,
     tempo_bpm: float,
+    low_note: int,
 ) -> tuple[ProbeResult, str, AudioBuffer]:
     """Render, probe and pick a profile for one preset. Returns (result, preset_profile, long_audio).
 
@@ -371,6 +376,21 @@ def _probe_and_classify_preset(
             result,
             duration_s=sustain_duration_s,
             release_tail_s=max(result.release_tail_s, _min_release_s(sustain_duration_s)),
+        )
+    elif low_note < probe_note:
+        # A pluck's capture length is how long it rings, and the probe note isn't where it
+        # rings longest: a key-tracked decay doubles every octave or so down (HS Cable Bass:
+        # 0.6 s at note 60, 4.3 s at note 24). Time it at the lowest note captured too, or
+        # every note below the probe gets its note-off before it has died away.
+        low = probe(
+            adapter.render_note(low_note, probe_velocity, long_hold_s, total_s, sample_rate=sample_rate),
+            long_hold_s,
+            sustains_hint=False,
+        )
+        result = replace(
+            result,
+            duration_s=max(result.duration_s, low.duration_s),
+            release_tail_s=max(result.release_tail_s, low.release_tail_s),
         )
 
     if profile is not None:
@@ -472,6 +492,7 @@ def scan_from_probe(
             sustain_duration_s,
             profile,
             tempo_bpm,
+            note_lo,
         )
 
         if not _switching_verified:
@@ -531,7 +552,8 @@ def _write_clap_config(
         f"  preset_path: {_yaml_path(preset_path)}\n"
     )
     content = _config_yaml(
-        preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate, subfolder=subfolder
+        preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate, subfolder=subfolder,
+        performance_lines=performance_yaml(read_performance(preset_path)),
     )
     # Mirror the preset's source subfolder in the config tree too, so configs are
     # organised the same way as the presets (and the exported XMLs).
@@ -542,6 +564,26 @@ def _write_clap_config(
     target_dir.mkdir(parents=True, exist_ok=True)
     out = target_dir / f"{_sanitize(preset_name)}.yaml"
     return _write_config_yaml(out, content, used_stems)
+
+
+def _backfill_performance(config_path: Path, preset_path: Path | None) -> None:
+    """Give an already-scanned config the `performance:` block it predates.
+
+    Resume skips a preset whose config exists, so a bank scanned before the block existed
+    would never get one without a full re-render. Unlike everything else in the config it
+    needs no render — it's read straight off the preset file — so it's appended here, and
+    only ever appended: a config that already has the section (hand-edited or not) is
+    left exactly as it is.
+    """
+    if preset_path is None:
+        return
+    block = performance_yaml(read_performance(preset_path))
+    if not block:
+        return
+    text = config_path.read_text()
+    if re.search(r"^performance:", text, re.MULTILINE):
+        return
+    config_path.write_text(text.rstrip("\n") + "\n\n" + block)
 
 
 def scan_clap(
@@ -686,6 +728,7 @@ def scan_clap(
         expected = expected / f"{_sanitize(preset_name)}.yaml"
         if expected.exists():
             skipped += 1
+            _backfill_performance(expected, preset_path)
             continue
 
         result, preset_profile, _ = _probe_and_classify_preset(
@@ -699,6 +742,7 @@ def scan_clap(
             sustain_duration_s,
             profile,
             tempo_bpm,
+            note_lo,
         )
 
         path = _write_clap_config(

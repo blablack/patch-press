@@ -28,6 +28,7 @@ def _apply_gain(sample: Sample, gain: float) -> Sample:
         # Scaled audio is no longer the source file's audio — it can't be copied verbatim
         # (see io/exporters/_common.py:write_sample_wav).
         metadata={**sample.metadata, "audio_verbatim": False},
+        note_off=sample.note_off,
     )
 
 

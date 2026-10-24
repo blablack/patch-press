@@ -24,7 +24,7 @@ The three arguments:
 For each `.clap-preset` file:
 
 1. Loads the plugin, hands it the preset file to restore, and captures the resulting state.
-2. Renders one probe note (default: MIDI 60) to classify sustain type.
+2. Renders one probe note (default: MIDI 60) to classify sustain type. A sustaining preset is held for the full `--duration`, with a release tail of the plugin's measured release (time to −40 dB after note-off, plus 0.3 s), but at least a quarter of the hold. A pluck is held for as long as it rings, timed at the probe note and again at the lowest captured note, whichever is longer: a key-tracked decay rings longest at the bottom of the keyboard.
 3. Measures whether the preset is actually stereo (below).
 4. Writes one config per preset with `source.type: clap`, `source.raw_state` baked in, and `source.preset_path` set to the original file.
 
@@ -51,6 +51,25 @@ mid = (L + R) / 2    side = (L - R) / 2    side_db = 20*log10(rms(side) / rms(mi
 At or below **-60 dB** the two channels are the same signal and the capture ships one channel. The threshold is nowhere near a close call: across the 1356 Diva presets in this corpus, 255 render *bit-identical* channels on every note, two more sit at -113 and -94 dB, and the next preset up is at -38.7 dB — a 56 dB hole in the distribution. Any threshold between -90 and -40 dB sorts them identically (19.0% mono). Presets don't change their mind across the keyboard either: over a 339-preset subset, not one was mono at some notes and stereo at others.
 
 `mono: true` is a plain capture setting like any other — delete it (or set it to `false`) and the next build ships stereo again. It is only ever written by the plugin scans; sample libraries ship whatever channel count the vendor mastered.
+
+## How the preset is played: read from the `.h2p`
+
+Some of a preset is nothing a capture can hear: a render is one note at a time, with the mod wheel and aftertouch at rest. A u-he `.h2p` (Diva, Zebra2, ZebraHZ) states that part as plain text, so the scan reads it straight off the file, with no render, and writes a `performance:` block whenever something differs from the defaults:
+
+```yaml
+performance:
+  # from the preset file: VCC Mode/Porta and the author's Usage note
+  voice_mode: legato
+  glide: 0.075
+  mod_wheel: vibrato
+  aftertouch: vibrato
+```
+
+- `voice_mode` comes from the `#cm=VCC` section's `Mode`: 0 poly, 1 mono, 2 legato, the same numbering in all three synths, checked against each preset's own `Features:` tags. Diva's duo mode and its second poly mode, and Zebra's arpeggiator, fall back to `poly`.
+- `glide` is `Porta`, the glide knob (0–100 in the plugin), as a 0–1 fraction.
+- `mod_wheel` / `aftertouch` reduce the author's free-text `Usage:` note (`'AT = Vibrato\r\nMW = Filter'`) to the intents an exporter can act on: `vibrato` (vibrato/waver/warble), and for the wheel `darken` (cutoff down, soften, darken, dampen, warmer) or `brighten` (cutoff, filter, brighter). A note that says anything else (`MW = tone`, `MW = reverb`, `AT = swell`) leaves the key unset rather than guessing.
+
+What each output does with it is listed under the output (see [Deluge](../outputs/deluge.html#performance-settings)). A bank scanned before this existed gets the block on its next `scan-clap` run: resume skips the render as always, but appends the block to any existing config that lacks one. It is only ever appended; a config that already has a `performance:` section is left as it is.
 
 ## Config shape
 

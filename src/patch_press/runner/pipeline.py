@@ -9,6 +9,7 @@ from ..analysis.pipeline import analyze_sampleset, classify_sampleset
 from ..analysis.trim import trim_silence
 from ..config.schema import (
     BitwigSourceConfig,
+    CaptureConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
     RunConfig,
@@ -53,6 +54,23 @@ def notes_to_capture(config: RunConfig, output_format: str) -> list[int]:
     return list(notes_used(notes)) if notes_used is not None else notes
 
 
+def velocities_to_capture(config: RunConfig, output_format: str) -> list[int]:
+    """The part of a plugin config's velocity layers the target format will actually ship.
+
+    Same shape as `notes_to_capture`: a velocity-sensitive preset's config asks for
+    several layers (capture.velocities), but only a format with velocity zones can use
+    more than one, so the exporter is asked before the renders are paid for
+    (`velocities_used`). Optional: an exporter that doesn't declare it gets every layer.
+    """
+    used = getattr(get_exporter(output_format), "velocities_used", None)
+    velocities = config.capture.velocities
+    return list(used(velocities)) if used is not None else list(velocities)
+
+
+def _plugin_capture(config: RunConfig, output_format: str) -> CaptureConfig:
+    return replace(config.capture, velocities=velocities_to_capture(config, output_format))
+
+
 def keeps_velocity_layers(output_format: str) -> bool:
     """Whether the target format has a real velocity-zone engine worth capturing more
     than one velocity layer for (only Bento's SampInst does — see io/exporters/bento.py
@@ -81,7 +99,7 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = VSTAdapter(config.source)
         sset = adapter.capture(
-            config.capture,
+            _plugin_capture(config, output_format),
             name=config.name or None,
             progress=progress,
             notes=notes_to_capture(config, output_format),
@@ -95,7 +113,7 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = CLAPAdapter(config.source)
         sset = adapter.capture(
-            config.capture,
+            _plugin_capture(config, output_format),
             name=config.name or None,
             progress=progress,
             notes=notes_to_capture(config, output_format),
@@ -127,6 +145,12 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
     else:
         raise TypeError(f"Unknown source config type: {type(config.source)}")
 
+    if isinstance(config.source, (VSTSourceConfig, CLAPSourceConfig)):
+        # More than one layer in the config is the scan's verdict that this preset's
+        # timbre follows velocity. Recorded before velocities_to_capture may have
+        # rendered just one, so a format that can't ship layers still gets told.
+        sset.source_metadata["velocity_sensitive"] = len(config.capture.velocities) > 1
+
     if not sset.samples:
         # Every downstream stage assumes at least one sample; without this the
         # first thing to divide by len(samples) is what surfaces, which says
@@ -149,6 +173,9 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
     sset = analyze_sampleset(
         sset, analysis, workers=workers, bake_crossfade=True if bakes is None else bakes()
     )
+    # Playing settings (voice mode, glide, controller intents) aren't in the audio, so they
+    # ride alongside it the same way a wavetable's archetype settings do.
+    sset.source_metadata["performance"] = config.performance
 
     return exporter_cls().export(sset, config.output, output_path)
 

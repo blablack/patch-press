@@ -12,6 +12,7 @@ from .schema import (
     CLAPSourceConfig,
     LibrarySourceConfig,
     OutputConfig,
+    PerformanceConfig,
     RunConfig,
     VSTSourceConfig,
     WavetableConfig,
@@ -20,7 +21,8 @@ from .schema import (
 
 log = logging.getLogger(__name__)
 
-_TOP_LEVEL_KEYS = {"source", "capture", "analysis", "output", "profile", "name", "category", "wavetable"}
+_TOP_LEVEL_KEYS = {"source", "capture", "analysis", "output", "profile", "name", "category", "wavetable", "performance"}
+_VOICE_MODES = {"poly", "mono", "legato"}
 
 
 def _warn_unknown(section_name: str, section: dict, allowed: set[str], path: Path) -> None:
@@ -160,6 +162,13 @@ def load_config(path: Path) -> RunConfig:
         else None
     )
 
+    perf = raw.get("performance") or {}
+    _warn_unknown("performance", perf, {f.name for f in fields(PerformanceConfig)}, path)
+    performance = PerformanceConfig(**{k: v for k, v in perf.items() if k in {f.name for f in fields(PerformanceConfig)}})
+    if performance.voice_mode not in _VOICE_MODES:
+        log.warning("%s: performance.voice_mode %r is not one of %s — using poly", path, performance.voice_mode, sorted(_VOICE_MODES))
+        performance.voice_mode = "poly"
+
     return RunConfig(
         source=source,
         capture=capture,
@@ -168,4 +177,5 @@ def load_config(path: Path) -> RunConfig:
         name=raw.get("name", output.name),
         category=raw.get("category", "synth"),
         wavetable=wavetable,
+        performance=performance,
     )

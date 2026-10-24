@@ -102,7 +102,17 @@ class PluginAdapterBase(Generic[_ConfigT]):
         tempo_bpm: float = 120.0,
         sample_rate: int = _SAMPLE_RATE,
     ) -> AudioBuffer:
-        return self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm, sample_rate)
+        """One note, its audio starting at note-on.
+
+        The scan times everything (`hold_s` as the note-off, its probe windows) from the
+        start of the buffer, so the _INIT_LEAD_S lead-in _render puts before note-on is
+        dropped here. Left in, every note-off the scan measured landed 5 s early and its
+        release tail came out 5 s long. The capture path keeps it instead, and trims it
+        away as silence.
+        """
+        audio = self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm, sample_rate)
+        lead = round(_INIT_LEAD_S * audio.sample_rate)
+        return AudioBuffer(data=audio.data[:, lead:], sample_rate=audio.sample_rate)
 
     def capture(
         self,
@@ -165,7 +175,8 @@ class PluginAdapterBase(Generic[_ConfigT]):
                                 velocity=vel,
                                 round_robin=rr,
                                 audio=audio,
-                                note_off=int(round(capture.duration_s * capture.sample_rate)),
+                                # The render starts _INIT_LEAD_S before note-on (_render).
+                                note_off=round((_INIT_LEAD_S + capture.duration_s) * capture.sample_rate),
                                 metadata={"mono": True} if capture.mono else {},
                             )
                         )

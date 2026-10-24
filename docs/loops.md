@@ -116,7 +116,7 @@ That writes `loop_debug.jsonl` in the current directory. Set `PATCHPRESS_LOOP_DE
 The escape hatch for a specific preset is manual editing. For a Deluge target, loop points live in the XML at `SYNTHS/<preset>/<Preset>.XML`, in each `<sampleRange>`:
 
 ```xml
-<sampleRange rangeTopNote="42" fileName="…" transpose="-9" loopMode="1">
+<sampleRange rangeTopNote="42" fileName="…" transpose="-9">
   <zone startSamplePos="0" endSamplePos="192000"
         startLoopPos="21504" endLoopPos="45568"/>
 </sampleRange>
@@ -124,7 +124,9 @@ The escape hatch for a specific preset is manual editing. For a Deluge target, l
 
 `startLoopPos` and `endLoopPos` are sample frame indices into the file. Edit those two numbers, save the XML, put the SD card back in the Deluge — no re-render needed.
 
-You can also **disable looping** for a single range by setting `loopMode="0"` on the `<sampleRange>` element. Useful if one specific note in a multisample refuses to loop cleanly and everything else does.
+A range that loops through the release has no `endLoopPos`: its loop ends at `endSamplePos`, which for a plugin capture is also the end of the file (see [Deluge output](outputs/deluge.html)). Move the loop start freely; the loop end can only move earlier, since the audio past it was cut away.
+
+There is no per-range loop mode (the firmware ignores a `loopMode` on `<sampleRange>`), so a single range can't be switched off on its own. Deleting a range's `startLoopPos`/`endLoopPos` makes it a one-shot only while the oscillator is in `loopMode="0"`; in `loopMode="2"` a range without loop points loops the whole file.
 
 ## I want a loop but there isn't one
 
@@ -144,4 +146,4 @@ The length reward saturates at 1.5 seconds, so above that patch-press has no pre
 
 ## Some sounds simply don't loop
 
-There's no clean loop for genuinely aperiodic material — a lone reverb tail, a filter sweep that never returns, a granular texture with no repeating structure. patch-press will always emit *something* (the fallback guarantees it) but the result won't sound musical no matter how much you tune thresholds. For those presets, `loopMode="0"` on all ranges + a longer captured tail is often better than any loop.
+There's no clean loop for genuinely aperiodic material — a lone reverb tail, a filter sweep that never returns, a granular texture with no repeating structure. patch-press will always emit *something* (the fallback guarantees it) but the result won't sound musical no matter how much you tune thresholds. For those presets, `profile: pluck` (no loop, full capture kept) is often better than any loop.

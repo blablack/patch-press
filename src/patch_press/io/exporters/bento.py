@@ -42,16 +42,20 @@ the device firmware (`bento1.bin`) — no format guesswork:
   `Wavetables must be mono WAVs.`
 """
 
+import dataclasses
 import logging
+import math
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from lxml import etree
 
 from ...analysis.drumkit import classify_instrument
+from ...analysis.envelope import release_time_s
 from ...config.schema import OutputConfig
+from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 from ._common import (
     safe_component,
@@ -69,6 +73,15 @@ log = logging.getLogger(__name__)
 # The firmware's user-content root and the two patch types we target, spelled as the
 # firmware spells them.
 _PATCH_ROOT = "UserPatches"
+
+# Dropped into every patch folder this exporter writes. The card is one flat namespace
+# shared with factory patches and ones made on the device, so this is how a sync tells
+# "mine to update or delete" from "not mine, hands off" without costing the name any of
+# its 18 characters. Nothing on the device reads it (the loader only wants `patch.xml`
+# and the WAVs it names; the browser finds `preview.wav` by name). Constant content, so a
+# rebuild writes the same bytes and a sync sees nothing to copy.
+MARKER_NAME = "patch-press.txt"
+_MARKER_TEXT = "Written by patch-press. prepare-sd-cards manages every folder that holds this file.\n"
 _TYPE_MULTISAMPLE = "SampInst"
 _TYPE_KIT = "OneShots"
 _TYPE_WAVETABLE = "Wavetable"
@@ -97,6 +110,68 @@ _KIT_BOTTOM_ROW = range(8, 16)
 # instead of baking it is that `Loop Fade` stays a knob on the front panel — this is a
 # starting value to turn, not a setting to live with.
 _LOOP_FADE = 200
+
+# `polymode` indexes the firmware's voice-mode table: Mono, Poly 2, Poly 4, Poly 6, Poly 8,
+# Poly X (voice counts 1, 2, 4, 6, 8, 128; read from bento1.bin). The factory bank agrees:
+# 0 is every bass, brass and woodwind, 4 is its strings, organs and electric pianos, 5 its
+# grand piano and Wurli. An instrument left at 0 plays one note at a time, so a multisample
+# gets Poly 8, the factory's choice for chords and pads; a kit pad only ever retriggers
+# itself, which is what 0 does.
+_POLY_MONO = 0
+_POLY_8 = 4
+
+# `envrel` is the Release knob in tenths of a percent (200 = the UI's "20.0%"). What the
+# percentage is a percentage OF isn't in the firmware's tables, so the curve was timed by
+# ear on hardware (a held, looped tone, time until inaudible): (percent, seconds).
+# Roughly linear from 30% up, collapsing to a few ms near 20%. Percentages above 70 were
+# only bounded (100% is "over 30 s"), and a 50% reading that contradicted its neighbours
+# was dropped — treat this as a measured approximation, not a derived scale.
+_RELEASE_CURVE = ((20, 0.015), (30, 1.0), (35, 2.0), (40, 2.7), (45, 3.8), (60, 8.6), (70, 12.4))
+_ENVREL_DEFAULT = 200  # 20%: a ~15 ms release, the factory's own (421 of its cells)
+_ENVREL_MAX = 700
+# The level the ear called "inaudible" is well below the Deluge's -40 dB, so the plugin's
+# release is timed to a deeper drop to be comparable with the curve above.
+_RELEASE_DROP_DB = 50.0
+
+
+def _envrel(seconds: float) -> int:
+    """The `envrel` value whose release takes about `seconds` to die away.
+
+    Interpolated between the measured points: log-linear under 30% (the curve falls off a
+    cliff there), linear above. Never below the default, never past 70%.
+    """
+    (p0, t0), *rest = _RELEASE_CURVE
+    if seconds <= t0:
+        return _ENVREL_DEFAULT
+    for p1, t1 in rest:
+        if seconds <= t1:
+            if t0 < 0.5:
+                frac = math.log(seconds / t0) / math.log(t1 / t0)
+            else:
+                frac = (seconds - t0) / (t1 - t0)
+            return round((p0 + frac * (p1 - p0)) * 10)
+        p0, t0 = p1, t1
+    return _ENVREL_MAX
+
+
+def _capture_envrel(samples: Iterable[Sample]) -> int:
+    """`envrel` matching the plugin's own release, timed on the captures.
+
+    One knob covers the whole instrument, so it's the median over the shipped notes (the
+    Deluge export does the same). A sample with no known note-off, or no release to time,
+    doesn't vote; with no votes the factory default stays.
+    """
+    times = [t for s in samples if (t := release_time_s(s.audio, s.note_off, _RELEASE_DROP_DB)) is not None]
+    if not times:
+        return _ENVREL_DEFAULT
+    times.sort()
+    return _envrel(times[len(times) // 2])
+
+
+# Hi-hat pads share one choke group so a closed hat cuts an open one: in all 15 factory
+# kits that use `chokegrp` at all, every closed and open hat pad is in group 1.
+_HAT_CHOKE_GROUP = 1
+_HAT_CATEGORIES = ("hat_closed", "hat_open")
 
 
 # --- wavetable (`wttrack`) ----------------------------------------------------------
@@ -420,7 +495,15 @@ def _cell(track, cell_type: str, **params):
 
 
 def _saminst_params(
-    *, samtrigtype: str, loopmodes: str, multisammode: str, celldisppos: int, loopfadeamt: int = 0
+    *,
+    samtrigtype: str,
+    loopmodes: str,
+    multisammode: str,
+    celldisppos: int,
+    loopfadeamt: int = 0,
+    envrel: int = _ENVREL_DEFAULT,
+    polymode: int = _POLY_MONO,
+    chokegrp: int = 0,
 ) -> dict:
     """The instrument cell's parameters, in the attribute order the device writes them.
 
@@ -444,11 +527,11 @@ def _saminst_params(
         "envattack": "0",
         "envdecay": "0",
         "envsus": "1000",
-        "envrel": "200",
+        "envrel": str(envrel),
         "velamount": "0",
         "outputbus": "0",
-        "polymode": "0",
-        "chokegrp": "0",
+        "polymode": str(polymode),
+        "chokegrp": str(chokegrp),
         "dualfilcutoff": "0",
         "res": "500",
         "fx1send": "0",
@@ -532,8 +615,8 @@ def _document(track_type: str, *, outputbus: bool):
     return doc, track
 
 
-def _write_wavs(sset: SampleSet, patch_dir: Path) -> dict[tuple[int, int, int], Path]:
-    """Write every sample into the patch folder itself.
+def _write_wavs(sset: SampleSet, samples: Iterable[Sample], patch_dir: Path) -> dict[tuple[int, int, int], Path]:
+    """Write the given samples into the patch folder itself.
 
     Unlike the Deluge's separate SAMPLES tree, a Bento patch references its samples by
     bare filename with no path, so the WAVs have to be siblings of `patch.xml` and their
@@ -542,7 +625,7 @@ def _write_wavs(sset: SampleSet, patch_dir: Path) -> dict[tuple[int, int, int], 
     patch_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[tuple[int, int, int], Path] = {}
     used_names: set[str] = set()
-    for s in sset.samples:
+    for s in samples:
         p = patch_dir / sample_wav_name(s, sset.tempo_bpm, used_names)
         if sset.category == Category.WAVETABLE:
             # The firmware refuses a stereo table outright ("Wavetables must be mono
@@ -694,6 +777,69 @@ def _centered_ranges(values: Sequence[int], lo: int, hi: int) -> list[tuple[int,
     return ranges
 
 
+def _shipped(sset: SampleSet, kit_pads: tuple | None = None) -> list[Sample]:
+    """The samples the patch.xml will reference, and so the only WAVs written.
+
+    Everything else in the set is never loaded by the device: round robins past the
+    lowest one of a velocity layer, the pads a kit loses to the 16-slot thinning, the
+    unused remainder of a wavetable set. Writing them would only cost card space and
+    lengthen the folder the patch loader scans. Mirrors what the builders below pick.
+    """
+    if sset.category == Category.DRUM:
+        by_note, pads, _ = kit_pads
+        return [by_note[n][0] for n in pads]
+    if sset.category == Category.WAVETABLE:
+        return [sset.samples[0]]
+    layers: dict[tuple[int, int], Sample] = {}
+    for s in sset.samples:
+        key = (s.note, s.velocity)
+        if key not in layers or s.round_robin < layers[key].round_robin:
+            layers[key] = s
+    return list(layers.values())
+
+
+def _cut_at_loop_end(sample: Sample) -> Sample:
+    """A capture cut where its loop ends.
+
+    The Bento keeps looping through the release (confirmed on hardware: the playhead
+    stays in the loop while `envrel` fades it) and never plays what lies past `loopend`,
+    so for a capture — seconds of held sustain and the plugin's own release — it is dead
+    weight on the card. A library WAV (no `note_off`) stays verbatim: its audio is a
+    vendor master, not ours to trim.
+    """
+    if not sample.loop_points or sample.note_off is None:
+        return sample
+    end = sample.loop_points[1]
+    return dataclasses.replace(
+        sample,
+        audio=AudioBuffer(data=sample.audio.data[:, :end], sample_rate=sample.audio.sample_rate),
+        metadata={**sample.metadata, "audio_verbatim": False},
+    )
+
+
+def _representatives(samples: Iterable[Sample]) -> dict[int, Sample]:
+    """One sample per note — velocity closest to 100 — for the properties `saminst`
+    holds once for the whole instrument (loop mode, loop fade)."""
+    best: dict[int, Sample] = {}
+    for s in samples:
+        if s.note not in best or abs(s.velocity - 100) < abs(best[s.note].velocity - 100):
+            best[s.note] = s
+    return best
+
+
+def _loop_on(representative: dict[int, Sample]) -> bool:
+    """Whether the instrument loops: majority of its notes have loop points.
+
+    `loopmodes` is a property of the instrument, not of the individual samples, so a
+    set where the loop detector succeeded on some notes and not others has to pick one
+    answer for all of them. Majority wins: turning looping off costs the looped notes
+    their sustain, while turning it on makes every unlooped note repeat its whole
+    length, which drones.
+    """
+    looped = sum(1 for s in representative.values() if s.loop_points)
+    return looped * 2 >= len(representative)
+
+
 def _loop_bounds(sample: Sample, frames: int) -> tuple[int, int]:
     """Loop points for one sample, in frames.
 
@@ -780,13 +926,20 @@ class BentoExporter:
         sub = subfolder_parts(config.subfolder)
         flat = _patch_folder(config, path)
         patch_dir = path.parent.joinpath(_PATCH_ROOT, kind, flat)
-        wav_paths = _write_wavs(sset, patch_dir)
+        kit = _kit_pads(sset, config.name) if sset.category == Category.DRUM else None
+        shipped = _shipped(sset, kit)
+        envrel = _ENVREL_DEFAULT
+        if sset.category == Category.SYNTH and _loop_on(_representatives(shipped)):
+            # Timed before the cut below, which drops the very release being measured.
+            envrel = _capture_envrel(shipped)
+            shipped = [_cut_at_loop_end(s) for s in shipped]
+        wav_paths = _write_wavs(sset, shipped, patch_dir)
 
         # Each branch also settles what its browser preview auditions: the kit's
         # post-thinning pad list, or the mono table copy the wavetable patch loads.
         preview: dict = {}
         if sset.category == Category.DRUM:
-            by_note, pads, positions = _kit_pads(sset, config.name)
+            by_note, pads, positions = kit
             doc = self._build_kit(wav_paths, by_note, pads, positions)
             preview["kit_samples"] = [by_note[n][0] for n in pads]
         elif sset.category == Category.WAVETABLE:
@@ -794,7 +947,9 @@ class BentoExporter:
             t = sset.samples[0]
             preview["table_wav"] = wav_paths[(t.note, t.velocity, t.round_robin)]
         else:
-            doc = self._build_multisample(sset, wav_paths, config.name)
+            doc = self._build_multisample(sset, wav_paths, config.name, envrel)
+
+        (patch_dir / MARKER_NAME).write_text(_MARKER_TEXT)
 
         # The declaration is written by hand rather than by lxml so it matches the
         # device's own byte-for-byte (lxml single-quotes the attribute values).
@@ -916,6 +1071,7 @@ class BentoExporter:
         sset: SampleSet,
         wav_paths: dict[tuple[int, int, int], Path],
         name: str,
+        envrel: int = _ENVREL_DEFAULT,
     ):
         # Group by note, then by distinct velocity — a source that only ever captures one
         # velocity per note (every non-Bitwig source today, and a Bitwig source built
@@ -935,13 +1091,8 @@ class BentoExporter:
         # collapse the Deluge exporter still does outright.
         representative = {n: min(by_note[n].values(), key=lambda s: abs(s.velocity - 100)) for n in notes}
 
-        # `loopmodes` is a property of the instrument, not of the individual samples, so
-        # a set where the loop detector succeeded on some notes and not others has to
-        # pick one answer for all of them. Majority wins: turning looping off costs the
-        # looped notes their sustain, while turning it on makes every unlooped note
-        # repeat its whole length, which drones.
         looped = sum(1 for n in notes if representative[n].loop_points)
-        loop_on = looped * 2 >= len(notes)
+        loop_on = _loop_on(representative)  # majority decides; see there
         if looped and looped != len(notes):
             log.warning(
                 "%s: %d of %d notes have loop points but the Bento loops per-instrument "
@@ -968,6 +1119,8 @@ class BentoExporter:
             multisammode="1",
             celldisppos=0,
             loopfadeamt=fade,
+            envrel=envrel,
+            polymode=_POLY_8,
         ))
 
         # Keyranges are centred on their root note (a note is repitched by at most half
@@ -1035,11 +1188,13 @@ class BentoExporter:
             frames = wav_frame_count(wav)
             # samtrigtype 0 / loopmodes 0: a pad fires the hit once and lets it ring
             # out, which is what every factory kit does.
+            hat = classify_instrument(s.metadata.get("instrument", "")) in _HAT_CATEGORIES
             _cell(track, "saminst", **_saminst_params(
                 samtrigtype="0",
                 loopmodes="0",
                 multisammode="0",
                 celldisppos=positions[note],
+                chokegrp=_HAT_CHOKE_GROUP if hat else 0,
             ))
             cell = _cell(
                 track, "samasst",
