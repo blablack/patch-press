@@ -29,7 +29,6 @@ On the card, such a file is **truncated** for the Deluge and the Bento rather th
 
 Stereo is accepted, and what happens to it depends on the target — the two devices genuinely differ:
 
-- **Polyend Tracker Mini / Tracker+**: both channels ship. The `.pti` length field counts frames *per channel*, so the window count is unchanged and the PCM is planar (all left, then all right) exactly like a stereo sample instrument.
 - **Deluge** and **1010music Bento**: downmixed to mono. The Deluge's wavetable oscillator is mono-only and the firmware won't force-load a stereo file as a wavetable at all; the Bento rejects one outright with `Wavetables must be mono WAVs.` The copy is no longer bit-for-bit for these files: it's re-encoded at the source's own bit depth, truncated to whole windows, with any `clm` chunk carried across.
 
 Downmixing is a real loss for material designed as stereo — Polyend's own stereo bank has tables whose channels correlate as low as −0.32, where mono summing cancels content rather than just narrowing it. So it's done only where the device leaves no choice.
@@ -114,5 +113,34 @@ If the auto-detection picked something you disagree with, either:
 ## On the SD card
 
 - **Deluge**: `SYNTHS/<name>/`, same as sample-based synths — a synth preset whose oscillator mode is set to `wavetable` in the XML, with the WAV alongside in the same folder.
-- **Polyend Tracker Mini**: a self-contained `.pti`, the table embedded as PCM.
 - **1010music Bento**: a `wttrack` patch folder under `UserPatches/Wavetable/`, the table WAV next to `patch.xml` and named by the oscillator cell. See [Bento](../outputs/bento.html#wavetables) for why the firmware's built-in table catalogue isn't what selects it.
+
+## Two-table "stack" patches (`--pair`, Bento)
+
+A Bento wavetable patch has two wavetable oscillators. 37 of the 65 factory patches play one table
+on both (detuned a few cents, the position LFO inverted on the second — what every single-table
+export here does); the other 28 give each oscillator its **own** table. `scan-wavetables --pair`
+writes that second kind: one config per *pair*, with the second table in `source.partner`:
+
+```yaml
+source:
+  type: wavetable
+  path: ".../ALTO_SAX.WAV"
+  partner: ".../TWIST1.WAV"
+```
+
+**How tables are paired (one way, deliberately simple): siblings.** Each table gets a timbre
+fingerprint (`analysis/wavetable.py:table_vector` — 16 harmonic bands, centroid and how far it
+travels, frame-to-frame change, length) and tables are matched nearest-first, each used once,
+skipping near-duplicates (pairs under the 20th percentile of nearest-neighbour distances).
+The factory's pairs are mostly a table and a close relative (FizzyAM + FizzyAM2, AnimatedSaws +
+FatSaws). The patch's numbers are the two tables' average; archetype, envelope shape and tag come
+from the first. The output name is `A+B`.
+
+**How a stack is built** (`BentoExporter._build_wavetable`, `_STACK_*`): the factory's recipe for
+those patches — a filter envelope (env 2 → cutoff), key tracking and the X pad on the cutoff, and
+vibrato from LFO 2 that the mod wheel brings in (LFO 2 → pitch on both oscillators, mod wheel →
+LFO 2 amount), on top of the opposed position sweeps. The amounts are mid-range factory values,
+**not derived and not ear-validated**. A single-table patch is byte-identical to before. The
+Deluge ignores `partner`.
+

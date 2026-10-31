@@ -9,17 +9,21 @@ from ..analysis.pipeline import analyze_sampleset, classify_sampleset
 from ..analysis.trim import trim_silence
 from ..config.schema import (
     BitwigSourceConfig,
+    MappedSourceConfig,
     CaptureConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
     RunConfig,
     VSTSourceConfig,
     WavetableSourceConfig,
+    GranularSourceConfig,
 )
 from ..io.adapters.bitwig import BitwigAdapter
+from ..io.adapters.mapped import MappedAdapter
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.adapters.vst import VSTAdapter
+from ..io.adapters.granular import GranularAdapter
 from ..io.adapters.wavetable import WavetableAdapter
 from ..io.exporters import get_exporter
 
@@ -35,12 +39,17 @@ def _source_location(source) -> str:
     return type(source).__name__
 
 
+def _zone_adapter(source: BitwigSourceConfig | MappedSourceConfig):
+    """The adapter for a source whose key mapping is read from a mapping file."""
+    return BitwigAdapter(source) if isinstance(source, BitwigSourceConfig) else MappedAdapter(source)
+
+
 def notes_to_capture(config: RunConfig, output_format: str) -> list[int]:
     """The part of a plugin config's note grid the target format will actually ship.
 
     Formats differ in how much of a melodic capture they can use: the Deluge maps
-    every note to its own keyzone, a .pti has no keyzones at all and ships one
-    repitched sample. Rendering the full grid for the latter throws away all but one
+    every note to its own keyzone, a drum-kit pad ships one
+    sample. Rendering the full grid for the latter throws away all but one
     capture, so the exporter is asked up front rather than after the renders are paid
     for. Each exporter answers for itself (`notes_used`), and picks the same note
     again at export time, so this can't select a note the export then ignores.
@@ -95,6 +104,17 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             progress.update(1)
         return exporter_cls().export(sset, config.output, output_path)
 
+    if isinstance(config.source, GranularSourceConfig):
+        # Same shape as a wavetable: a source sound the Bento's grain engine plays,
+        # nothing to trim/loop/normalize. See io/adapters/granular.py.
+        adapter = GranularAdapter(config.source)
+        sset = adapter.capture(name=config.name or None)
+        sset.source_metadata["granular"] = config.granular
+        exporter_cls = get_exporter(output_format)
+        if progress is not None:
+            progress.update(1)
+        return exporter_cls().export(sset, config.output, output_path)
+
     if isinstance(config.source, VSTSourceConfig):
         log.debug(f"{config.source.plugin.name} - {config.source.preset}")
         adapter = VSTAdapter(config.source)
@@ -123,9 +143,9 @@ def run(config: RunConfig, output_path: Path, output_format: str, workers: int =
             pitch_verify=False,
             tempo_bpm=config.analysis.tempo_bpm or config.capture.tempo_bpm,
         )
-    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig)):
-        if isinstance(config.source, BitwigSourceConfig):
-            adapter = BitwigAdapter(config.source)
+    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig, MappedSourceConfig)):
+        if isinstance(config.source, (BitwigSourceConfig, MappedSourceConfig)):
+            adapter = _zone_adapter(config.source)
             sset = adapter.capture(
                 name=config.name or None,
                 max_round_robins=config.capture.round_robins,
@@ -186,10 +206,10 @@ def classify(config: RunConfig, workers: int = 1, save_path: Path | None = None)
         adapter = VSTAdapter(config.source) if isinstance(config.source, VSTSourceConfig) else CLAPAdapter(config.source)
         sset = adapter.capture(config.capture, name=config.name or None)
         tempo_bpm = config.analysis.tempo_bpm or config.capture.tempo_bpm
-    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig)):
+    elif isinstance(config.source, (LibrarySourceConfig, BitwigSourceConfig, MappedSourceConfig)):
         adapter = (
-            BitwigAdapter(config.source)
-            if isinstance(config.source, BitwigSourceConfig)
+            _zone_adapter(config.source)
+            if isinstance(config.source, (BitwigSourceConfig, MappedSourceConfig))
             else LibraryAdapter(config.source)
         )
         sset = adapter.capture(

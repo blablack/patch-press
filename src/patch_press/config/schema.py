@@ -46,15 +46,48 @@ class BitwigSourceConfig:
     # authoritative metadata read from the XML — no filename parsing or loop detection.
     path: Path
     # A `.multisample` can layer several velocity zones per note. Hardware sampler
-    # presets don't do velocity layering (the Deluge/Polyend exporters collapse to one
+    # presets don't do velocity layering (the Deluge exporter collapses to one
     # sample per note anyway), so the adapter keeps a single layer per note: the zone
     # whose top velocity is nearest this target. Hand-edit to pick a softer/louder layer.
     velocity: int = 100
 
 
 @dataclass
+class MappedSourceConfig:
+    # An SFZ (`format: sfz`) or Kontakt NKI (`format: kontakt`) instrument: a mapping file
+    # that points at WAVs on disk. Like a Bitwig `.multisample`, the keys, velocity zones
+    # and loop points are authoritative metadata (io/sfz.py, io/kontakt.py), not guesses.
+    path: Path
+    format: str = "sfz"
+    # Same meaning as BitwigSourceConfig.velocity: the layer kept when the exporter can't ship several.
+    velocity: int = 100
+
+
+@dataclass
 class WavetableSourceConfig:
     path: Path
+    # A second table for the Bento's second wavetable oscillator (a "stack" patch:
+    # two different tables layered, as 28 of the 65 factory wavetable patches do).
+    # None = the one table on both oscillators. The Deluge ignores it.
+    partner: Optional[Path] = None
+
+
+@dataclass
+class GranularSourceConfig:
+    path: Path
+
+
+@dataclass
+class GranularConfig:
+    """What scan-granular reads off a source sound for a Bento granular patch. The rest
+    of the patch is the recipe in io/exporters/bento.py (`_GR_*`), the same for every
+    sound -- see docs/inputs/granular.md."""
+
+    # Where in the source (0..1 of its length) the held grain cloud sits: the steadiest
+    # loud moment, not the attack. analysis/granular.py:stable_position.
+    freeze_pos: float = 0.5
+    # Timbre word fed to the Bento tag deriver, like WavetableConfig.tag_hint.
+    tag_hint: str = "texture"
 
 
 @dataclass
@@ -175,11 +208,12 @@ class OutputConfig:
 
 @dataclass
 class RunConfig:
-    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig, BitwigSourceConfig, WavetableSourceConfig]
+    source: Union[VSTSourceConfig, CLAPSourceConfig, LibrarySourceConfig, BitwigSourceConfig, MappedSourceConfig, WavetableSourceConfig, GranularSourceConfig]
     capture: CaptureConfig
     analysis: AnalysisConfig
     output: OutputConfig
     name: str = ""
     category: str = "synth"
     wavetable: Optional[WavetableConfig] = None
+    granular: Optional[GranularConfig] = None
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)

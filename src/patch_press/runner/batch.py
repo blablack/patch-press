@@ -5,13 +5,16 @@ from ..progress import ProgressBar as tqdm
 from ..config.loader import load_config
 from ..config.schema import (
     BitwigSourceConfig,
+    MappedSourceConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
     RunConfig,
     VSTSourceConfig,
     WavetableSourceConfig,
+    GranularSourceConfig,
 )
 from ..io.adapters.bitwig import BitwigAdapter
+from ..io.adapters.mapped import MappedAdapter
 from ..io.adapters.library import LibraryAdapter
 from ..io.exporters import get_exporter
 from .pipeline import keeps_velocity_layers, notes_to_capture, run, velocities_to_capture
@@ -40,14 +43,15 @@ def _expected_notes(config: RunConfig, output_format: str) -> int:
             return LibraryAdapter(src).expected_count(cap.round_robins, cap.note_step)
         except OSError:
             return 0
-    if isinstance(src, BitwigSourceConfig):
+    if isinstance(src, (BitwigSourceConfig, MappedSourceConfig)):
         try:
-            return BitwigAdapter(src).expected_count(
+            adapter_cls = BitwigAdapter if isinstance(src, BitwigSourceConfig) else MappedAdapter
+            return adapter_cls(src).expected_count(
                 cap.round_robins, cap.note_step, keeps_velocity_layers(output_format)
             )
         except (OSError, ValueError):
             return 0
-    if isinstance(src, WavetableSourceConfig):
+    if isinstance(src, (WavetableSourceConfig, GranularSourceConfig)):
         # scan_wavetables emits one config per file; each contributes exactly one
         # `progress.update(1)` from runner/pipeline.py's wavetable branch.
         return 1

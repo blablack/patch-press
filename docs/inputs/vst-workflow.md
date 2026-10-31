@@ -65,7 +65,7 @@ For each config, `batch`:
 
 1. Renders the plugin across `[start-note, end-note]` at `note-step` intervals (default: C1 to C6 every 3 semitones).
 2. Runs the [analysis pipeline](../pipeline.html) — trim, envelope, loop detect, normalize.
-3. Writes the preset in whatever `--format` you asked for — [Deluge XML in `SYNTHS/`, WAVs in `SAMPLES/`](../outputs/deluge.html), or a self-contained [Polyend Tracker `.pti`](../outputs/polyend.html) with `--format pti`.
+3. Writes the preset in whatever `--format` you asked for — [Deluge XML in `SYNTHS/`, WAVs in `SAMPLES/`](../outputs/deluge.html), or a [Bento patch folder](../outputs/bento.html) with `--format bento`.
 
 If the output already exists, `batch` skips it. Use `--no-skip` to re-render.
 
@@ -86,7 +86,7 @@ patch-press scan-from-probe ~/patch-probe/Dexed configs/Dexed
 patch-press batch "configs/Dexed/*.yaml" --path /media/DELUGE --format deluge
 ```
 
-That's it. Every Dexed preset you captured is now a Deluge synth preset with a full multisample (swap `--format pti` for a Polyend Tracker `.pti` instrument instead — see [Outputs](../outputs/)).
+That's it. Every Dexed preset you captured is now a Deluge synth preset with a full multisample (swap `--format bento` for a 1010music Bento patch instead — see [Outputs](../outputs/)).
 
 ## `scan-from-probe` options
 

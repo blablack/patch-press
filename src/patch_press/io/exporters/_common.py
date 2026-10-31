@@ -161,9 +161,7 @@ def write_wavetable_wav(src: Path, dest: Path) -> None:
     and refuses to load a stereo file as a wavetable at all, and the Bento rejects one
     outright with "Wavetables must be mono WAVs." (a firmware string). So it is
     downmixed, truncated to whole 2048-sample windows, and rewritten with any `clm`
-    chunk carried across. (The Polyend Tracker Mini does play stereo wavetables, so the
-    .pti export of the same config keeps both channels; this narrowing is for the two
-    devices that read a WAV off the card.)
+    chunk carried across.
 
     A mono source with no `clm` chunk and a trailing partial window can't be copied
     either: without the chunk, the Deluge firmware accepts a file as a wavetable only

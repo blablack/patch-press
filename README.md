@@ -1,6 +1,6 @@
 # patch-press
 
-Captures VST/CLAP plugin presets and sample libraries and exports ready-to-play presets for hardware samplers — [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV), [Polyend Tracker](https://polyend.com/tracker/) (self-contained `.pti`) or [1010music Bento](https://1010music.com/) (a `patch.xml` folder per preset), picked with `--format`. The goal is zero manual YAML writing — scan commands auto-generate configs from patch-probe output, CLAP plugin directories, or sample library folders. YAML files are the escape hatch when auto-detection needs a nudge.
+Captures VST/CLAP plugin presets and sample libraries and exports ready-to-play presets for hardware samplers — [Synthstrom Deluge](https://synthstrom.com/product/deluge/) (XML + WAV) or [1010music Bento](https://1010music.com/) (a `patch.xml` folder per preset), picked with `--format`. The goal is zero manual YAML writing — scan commands auto-generate configs from patch-probe output, CLAP plugin directories, or sample library folders. YAML files are the escape hatch when auto-detection needs a nudge.
 
 Full docs: https://blablack.github.io/patch-press/
 
@@ -8,7 +8,7 @@ Full docs: https://blablack.github.io/patch-press/
 
 - Python ≥ 3.14
 - [patch-render](../patch-render) — companion JUCE-based audio host that drives VST/CLAP rendering
-- A target output location: a Deluge SD card, a Polyend Tracker SD card, or a directory laid out like either (see [Output layout](#output-layout))
+- A target output location: a Deluge SD card, a Bento SD card, or a directory laid out like either (see [Output layout](#output-layout))
 
 ## Installation
 
@@ -18,7 +18,7 @@ pip install -e .
 
 ## Workflows
 
-Every workflow below ends the same way: `batch`/`sample` with `--format deluge`, `--format pti` or `--format bento`. Examples use `deluge`; swap the flag (and `--path`) for a Polyend Tracker `.pti` instrument or a 1010music Bento patch instead — see [Output layout](#output-layout).
+Every workflow below ends the same way: `batch`/`sample` with `--format deluge` or `--format bento`. Examples use `deluge`; swap the flag (and `--path`) for a 1010music Bento patch instead — see [Output layout](#output-layout).
 
 ### VST presets (via patch-probe)
 
@@ -100,7 +100,7 @@ All scan commands accept:
 | Option | Default | Description |
 |---|---|---|
 | `--path PATH` | required | Output root directory |
-| `--format FORMAT` | required | Output format: `deluge`, `pti` or `bento` |
+| `--format FORMAT` | required | Output format: `deluge` or `bento` |
 | `--workers N` | 1 | Parallel analysis threads |
 | `--no-skip` | — | Re-run even if output already exists |
 
@@ -165,17 +165,6 @@ Library configs use `source.type: library` with `source.path` instead of plugin/
 ```
 
 Copy the output directory to the matching location on the SD card (`SYNTHS/` or `KITS/`).
-
-### `--format pti`
-
-Flat — one self-contained `.pti` file per preset, no companion WAVs:
-
-```
-<--path>/
-  MyPreset.pti
-```
-
-Copy anywhere on the Tracker's SD card and load from the file browser. Multisamples and kits each collapse to the single sample nearest the preset's root note (the `.pti` format has no keyzones); see [docs/outputs/polyend.md](docs/outputs/polyend.md) for the full mapping and hardware caveats.
 
 ### `--format bento`
 

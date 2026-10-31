@@ -112,7 +112,7 @@ def _resample(data: np.ndarray, sample_rate: int) -> np.ndarray:
     """(2, N) float32 at sample_rate -> (2, M) float32 at 48 kHz."""
     if sample_rate == _SR:
         return data
-    import soxr  # deferred: pulls in its C extension, like the .pti exporter's use of it
+    import soxr  # deferred: pulls in its C extension, to keep import time down
 
     out = soxr.resample(data.T, sample_rate, _SR, quality="HQ")
     return np.ascontiguousarray(out.T, dtype=np.float32)
@@ -278,7 +278,15 @@ def _lowpass(sig: np.ndarray, cutoff_hz: float) -> np.ndarray:
     return sosfilt(sos, sig)
 
 
-def _render_wavetable(sset: SampleSet, table_wav: Path) -> tuple[np.ndarray, int]:
+def _load_table(table_wav: Path) -> np.ndarray:
+    mono = AudioBuffer.from_file(table_wav).to_mono().astype(np.float64)
+    n_win = len(mono) // _WT_WINDOW
+    if n_win < 1:
+        raise ValueError(f"{table_wav.name}: shorter than one {_WT_WINDOW}-sample window")
+    return mono[: n_win * _WT_WINDOW].reshape(n_win, _WT_WINDOW)
+
+
+def _render_wavetable(sset: SampleSet, table_wav: Path, partner_wav: Path | None = None) -> tuple[np.ndarray, int]:
     """Approximate what the Bento's oscillator will do with this table and these params.
 
     Mirrors `_build_wavetable`: two oscillators detuned +/-6 cents, both reading the one
@@ -288,11 +296,9 @@ def _render_wavetable(sset: SampleSet, table_wav: Path) -> tuple[np.ndarray, int
     the audio the device will actually load.
     """
     wt = sset.source_metadata["wavetable"]
-    mono = AudioBuffer.from_file(table_wav).to_mono().astype(np.float64)
-    n_win = len(mono) // _WT_WINDOW
-    if n_win < 1:
-        raise ValueError(f"{table_wav.name}: shorter than one {_WT_WINDOW}-sample window")
-    table = mono[: n_win * _WT_WINDOW].reshape(n_win, _WT_WINDOW)
+    table = _load_table(table_wav)
+    # A stack patch's second oscillator reads its own table; otherwise both read the one.
+    table2 = _load_table(partner_wav) if partner_wav is not None else table
 
     n = _FRAMES
     t = np.arange(n, dtype=np.float64) / _SR
@@ -303,7 +309,7 @@ def _render_wavetable(sset: SampleSet, table_wav: Path) -> tuple[np.ndarray, int
     freq = 440.0 * 2.0 ** ((_PREVIEW_NOTE - 69) / 12.0)
     voices = [
         _osc(table, freq * 2.0 ** (-_WT_DETUNE_SEMITONES / 12.0), base + lfo, n),
-        _osc(table, freq * 2.0 ** (_WT_DETUNE_SEMITONES / 12.0), base - lfo, n),
+        _osc(table2, freq * 2.0 ** (_WT_DETUNE_SEMITONES / 12.0), base - lfo, n),
     ]
 
     cut = _CUTOFF_HZ[0] * (_CUTOFF_HZ[1] / _CUTOFF_HZ[0]) ** float(np.clip(wt.filter_cutoff, 0.0, 1.0))
@@ -319,6 +325,60 @@ def _render_wavetable(sset: SampleSet, table_wav: Path) -> tuple[np.ndarray, int
     return stereo.astype(np.float32), _SR
 
 
+# --- granular synthesis knobs -------------------------------------------------------
+# Plausible ranges, NOT derived (the Bento's grain parameters are unitless 0..1000), for an
+# approximation of a granular patch -- two grain clouds, one held on the steady moment and
+# one drifting through the sound -- good enough to browse by.
+_GR_GRAINS_PER_S = 32.0
+_GR_GRAIN_S = 0.22
+_GR_JITTER_S = 0.012
+_GR_DRIFT = 0.04      # how far the held cloud's position wanders, as a fraction of the sound
+_GR_MOVE_SPEED = 0.64  # the moving cloud's read speed, relative to real time
+
+
+def _grain_cloud(src: np.ndarray, position, rng: np.random.Generator, spread: float) -> np.ndarray:
+    """(2, _FRAMES) cloud of Hann-windowed grains read from `src` at `position(t)` (0..1)."""
+    out = np.zeros((2, _FRAMES), dtype=np.float64)
+    glen = int(_GR_GRAIN_S * _SR)
+    window = np.hanning(glen)
+    n_src = len(src)
+    for t in np.arange(0.0, _FRAMES / _SR, 1.0 / _GR_GRAINS_PER_S):
+        at = int((t + rng.uniform(-_GR_JITTER_S, _GR_JITTER_S)) * _SR)
+        if at < 0 or at >= _FRAMES:
+            continue
+        centre = int(min(max(position(t), 0.0), 1.0) * n_src)
+        lo = min(max(centre - glen // 2, 0), max(n_src - glen, 0))
+        grain = src[lo : lo + glen]
+        if len(grain) < glen:
+            grain = np.pad(grain, (0, glen - len(grain)))
+        grain = grain * window
+        end = min(at + glen, _FRAMES)
+        pan = rng.uniform(0.5 - spread / 2, 0.5 + spread / 2)
+        out[0, at:end] += grain[: end - at] * np.cos(pan * np.pi / 2)
+        out[1, at:end] += grain[: end - at] * np.sin(pan * np.pi / 2)
+    return out
+
+
+def _render_granular(grain_wavs: tuple[Path, Path], freeze_rel: float) -> tuple[np.ndarray, int]:
+    """Approximate a granular patch: the held cloud plus the moving cloud, as `_build_granular` sets them."""
+    rng = np.random.default_rng(0)
+    held_src = AudioBuffer.from_file(grain_wavs[0]).to_mono().astype(np.float64)
+    move_src = AudioBuffer.from_file(grain_wavs[1]).to_mono().astype(np.float64)
+    seconds = _FRAMES / _SR
+    held = _grain_cloud(
+        held_src, lambda t: freeze_rel + _GR_DRIFT * np.sin(2 * np.pi * 0.25 * t), rng, spread=0.7
+    )
+    start = 0.15
+    moving = _grain_cloud(
+        move_src,
+        lambda t: (start + _GR_MOVE_SPEED * t * _SR / max(len(move_src), 1)) % 1.0,
+        rng, spread=0.95,
+    )
+    mix = held + moving
+    env = _adsr(0.05, 0.1, 1.0, 0.3, _FRAMES)
+    return (mix * env).astype(np.float32), _SR
+
+
 # --- entry point --------------------------------------------------------------------
 def write_preview(
     sset: SampleSet,
@@ -326,6 +386,9 @@ def write_preview(
     *,
     kit_samples: list[Sample] | None = None,
     table_wav: Path | None = None,
+    partner_wav: Path | None = None,
+    grain_wavs: tuple[Path, Path] | None = None,
+    freeze_rel: float = 0.5,
 ) -> Path:
     """Render this patch's `preview.wav` into its folder and return the path.
 
@@ -337,10 +400,14 @@ def write_preview(
         if not kit_samples:
             raise ValueError("kit preview needs the exported pad list")
         audio, sr = _render_kit(kit_samples)
+    elif sset.category == Category.GRANULAR:
+        if grain_wavs is None:
+            raise ValueError("granular preview needs the exported grain source WAVs")
+        audio, sr = _render_granular(grain_wavs, freeze_rel)
     elif sset.category == Category.WAVETABLE:
         if table_wav is None:
             raise ValueError("wavetable preview needs the exported table WAV")
-        audio, sr = _render_wavetable(sset, table_wav)
+        audio, sr = _render_wavetable(sset, table_wav, partner_wav)
     else:
         audio, sr = _render_multisample(sset)
 

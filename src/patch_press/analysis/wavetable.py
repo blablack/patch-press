@@ -279,3 +279,61 @@ def classify_archetype(audio: AudioBuffer) -> WavetableAnalysis:
 
     return _result(archetype, wt_position, lfo2_rate, lfo2_depth, filter_cutoff,
                    tag_hint, flags)
+
+
+# --- pairing for the Bento's two-table "stack" patches ----------------------------------
+_PAIR_BANDS = 16  # harmonic bands of 8 over harmonics 1..128
+# Pairs closer than this quantile of every table's nearest-neighbour distance are near
+# duplicates of one table (Liam's banks hold runs of variations on one source), and
+# stacking one on its own twin is the single-table patch with extra steps.
+_PAIR_MIN_QUANTILE = 0.20
+
+
+def table_vector(audio: AudioBuffer) -> np.ndarray | None:
+    """A timbre fingerprint of a whole table, for deciding which two sit well together.
+
+    Mean energy in 16 harmonic bands (log), centroid and its range across the table
+    (how far it travels), frame-to-frame change (how fast), and length in frames. None
+    if shorter than one frame. Unwindowed for the same reason as the rest of this file.
+    """
+    mono = audio.to_mono().astype(np.float64)
+    n = len(mono) // FRAME_SIZE
+    if n < 1:
+        return None
+    frames = mono[: n * FRAME_SIZE].reshape(n, FRAME_SIZE)
+    spec = np.abs(np.fft.rfft(frames, axis=1))[:, 1:129]
+    spec = spec / (spec.sum(axis=1, keepdims=True) + 1e-12)
+    cent = (spec * np.arange(1, 129)).sum(axis=1)
+    bands = np.array([spec[:, i : i + 8].sum(axis=1).mean() for i in range(0, 128, 8)])
+    change = np.abs(np.diff(spec, axis=0)).sum(axis=1).mean() if n > 1 else 0.0
+    return np.concatenate([
+        np.log10(bands + 1e-5),
+        [np.log10(cent.mean() + 1.0), np.log10(cent.max() - cent.min() + 1.0), np.log10(change + 1e-3), np.log2(n)],
+    ])
+
+
+def pair_tables(vectors: list[np.ndarray]) -> list[tuple[int, int]]:
+    """Pair tables up, each used once: nearest in timbre first, never near-duplicates.
+
+    One "way" to pair, deliberately simple: siblings. The factory's two-table patches
+    are mostly a table and a close relative of it (FizzyAM + FizzyAM2, AnimatedSaws +
+    FatSaws, BandpassSquare + SyncBandpass) with the detune and the opposed position
+    sweeps making the difference. Greedy by distance over z-scored fingerprints, which
+    skips any pair under _PAIR_MIN_QUANTILE of the nearest-neighbour distances. Returns
+    index pairs (a, b) with a < b; an odd one out is left unpaired.
+    """
+    x = np.array(vectors)
+    x = (x - x.mean(axis=0)) / (x.std(axis=0) + 1e-9)
+    d = np.linalg.norm(x[:, None] - x[None], axis=2)
+    np.fill_diagonal(d, np.inf)
+    floor = float(np.quantile(d.min(axis=1), _PAIR_MIN_QUANTILE))
+    order = np.dstack(np.unravel_index(np.argsort(d, axis=None), d.shape))[0]
+    used: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for i, j in order:
+        i, j = int(i), int(j)
+        if i >= j or i in used or j in used or d[i, j] < floor:
+            continue
+        pairs.append((i, j))
+        used.update((i, j))
+    return sorted(pairs)

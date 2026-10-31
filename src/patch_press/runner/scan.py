@@ -26,7 +26,8 @@ from ..analysis.probe import (
     probe,
 )
 from ..analysis.velocity import is_velocity_sensitive, velocity_timbre_shift
-from ..analysis.wavetable import _ARCHETYPES, classify_archetype
+from ..analysis.granular import MIN_SECONDS, stable_position
+from ..analysis.wavetable import _ARCHETYPES, classify_archetype, pair_tables, table_vector
 from ..config.schema import CLAPSourceConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.h2p import performance_yaml, read_performance
@@ -1072,12 +1073,12 @@ def _detect_oneshot_note(audio: AudioBuffer, pitch_class: int | None) -> tuple[i
     if hz is None:
         if pitch_class is not None:
             # Nearest note of the known class to middle C, as a plausible default.
-            candidates = [n for n in range(0, 128) if n % 12 == pitch_class]
+            candidates = [n for n in range(128) if n % 12 == pitch_class]
             return min(candidates, key=lambda n: abs(n - 60)), "pitch detection failed — verify root note/octave manually"
         return 60, "pitch detection failed — defaulted to C4, verify root note manually"
 
     if pitch_class is not None:
-        candidates = [n for n in range(0, 128) if n % 12 == pitch_class]
+        candidates = [n for n in range(128) if n % 12 == pitch_class]
         detected_midi = hz_to_midi(hz)
         best = min(candidates, key=lambda n: abs(n - detected_midi))
     else:
@@ -1280,13 +1281,175 @@ def scan_bitwig(
     return summary
 
 
+_MAPPED_SUFFIX = {"sfz": ".sfz", "kontakt": ".nki"}
+
+
+def scan_mapped(
+    folder: Path,
+    config_dir: Path,
+    fmt: str,
+    profile: str | None = None,
+    note_step: int = DEFAULT_NOTE_STEP,
+    strip_suffix: str = "",
+    name_from_folder: bool = False,
+    split_prefix: bool = False,
+    debug: bool = False,
+) -> ScanSummary:
+    """Generate one config per SFZ (`fmt="sfz"`) or Kontakt NKI (`fmt="kontakt"`) under `folder`.
+
+    The same contract as `scan_bitwig`: the mapping file says which WAV plays on which
+    key, at which velocity, and where it loops, so the scan renders nothing and detects
+    nothing. A mapping where more than half of the zones loop is a sustaining instrument
+    (`synth`, ships the authored loops), otherwise `pluck`. Unlike a `.multisample`, the
+    WAVs are the vendor's own files on disk, so they ship verbatim (`trim: false`,
+    `normalize: none`, no loop detection — a zone the mapping doesn't loop is a one-shot
+    on purpose), exactly as the WAV-library scan does.
+
+    `strip_suffix` is removed from the end of each preset name ("White Siren - Kawaii
+    Dreams From Mars" → "White Siren"), for packs that stamp their own name on every file.
+    `name_from_folder` names a preset after the one WAV folder its zones all play from, when
+    that folder belongs to this mapping alone -- the name and subfolder the WAV-folder scan gives
+    the same instrument ("Fisherman'sFriend", where the mapping file says "FishermansFriend"), so
+    switching a library from WAV folders to its mappings keeps every patch name.
+    `split_prefix` turns a "Category - Name" file name into a `Category` subfolder level and
+    the name "Name" (Wave Alchemy's flat "Sustained - Bentley Boom.nki" files).
+    Files are found recursively and their folder position under `folder` is mirrored into
+    the config tree and `output.subfolder`. A file this reader cannot decode (e.g. a
+    Kontakt 5+ NKI) is skipped with the reason printed, never fatal.
+    """
+    from ..io.adapters.zonemap import join_stereo_pairs
+    from ..io.kontakt import UnsupportedNki, parse_nki
+    from ..io.sfz import parse_sfz
+
+    parse = {"sfz": parse_sfz, "kontakt": parse_nki}[fmt]
+    suffix = _MAPPED_SUFFIX[fmt]
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    files = sorted(p for p in folder.rglob("*") if p.suffix.lower() == suffix and "__MACOSX" not in p.parts and not p.name.startswith("."))
+    if debug:
+        files = files[:5]
+    summary = ScanSummary(total=len(files))
+    used_stems: set[str] = set()
+
+    parsed: dict[Path, list] = {}
+    folders: dict[Path, set[Path]] = {}  # the WAV folders a mapping plays from, L/R pairs included
+    for mapping in tqdm(files, desc=f"Reading {folder.name}", unit="file"):
+        try:
+            raw = parse(mapping)
+            folders[mapping] = {Path(zn.file).parent for zn in raw}
+            parsed[mapping] = join_stereo_pairs(raw)
+        except UnsupportedNki as exc:
+            tqdm.write(f"  {mapping.name}: SKIPPED ({exc})")
+        except (OSError, ValueError, KeyError, SyntaxError) as exc:
+            tqdm.write(f"  {mapping.name}: SKIPPED ({type(exc).__name__}: {exc})")
+
+    claims: dict[Path, int] = {}
+    wav_dir: dict[Path, Path] = {}
+    for mapping in parsed:
+        dirs = folders[mapping]
+        if len(dirs) == 1:
+            wav_dir[mapping] = next(iter(dirs))
+            claims[wav_dir[mapping]] = claims.get(wav_dir[mapping], 0) + 1
+
+    for mapping, zones in parsed.items():
+        preset_name = mapping.stem
+        if strip_suffix and preset_name.endswith(strip_suffix):
+            preset_name = preset_name[: -len(strip_suffix)].rstrip()
+        if name_from_folder and mapping in wav_dir and claims[wav_dir[mapping]] == 1:
+            preset_name = wav_dir[mapping].name
+
+        if not zones:
+            tqdm.write(f"  {mapping.name}: SKIPPED (no playable samples found)")
+            continue
+
+        rel = mapping.parent.relative_to(folder).as_posix()
+        subfolder = "" if rel == "." else rel
+        if name_from_folder and mapping in wav_dir and claims[wav_dir[mapping]] == 1:
+            # Where the WAV-folder scan would have put it: the folder's place under the `WAV`
+            # root, not the mapping file's (a pack's NKIs may sort into categories its WAVs don't).
+            parts = wav_dir[mapping].parts
+            roots = [i for i, part in enumerate(parts) if part.lower() in ("wav", "samples")]
+            if roots:
+                subfolder = "/".join(parts[roots[-1] + 1 : -1])
+        if split_prefix and " - " in preset_name:
+            prefix, preset_name = preset_name.split(" - ", 1)
+            subfolder = f"{subfolder}/{prefix}" if subfolder else prefix
+
+        n = len(zones)
+        looped = sum(1 for zn in zones if zn.loop_start is not None)
+        fixed = sum(1 for zn in zones if not zn.track)
+        roots = sorted({zn.root for zn in zones})
+        paired = sum(1 for zn in zones if zn.partner is not None)
+
+        preset_profile = profile if profile is not None else ("synth" if looped > n / 2 else "pluck")
+
+        flags: list[str] = []
+        if fixed > n / 2:
+            flags.append(
+                "fixed-pitch samples (percussion?) — each key maps to its own hit; "
+                "verify keyboard mapping or split into a kit"
+            )
+        tqdm.write(
+            f"  {preset_name} → {preset_profile} "
+            f"({len(roots)} notes, {looped}/{n} looped"
+            + (f", {paired} stereo pairs joined" if paired else "")
+            + ")"
+            + (f" [{', '.join(flags)}]" if flags else "")
+        )
+
+        review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
+        subfolder_line = f'  subfolder: "{subfolder}"\n' if subfolder else ""
+        content = (
+            f"{review_line}"
+            f"# {n} samples, {len(roots)} notes [{roots[0]}-{roots[-1]}], {looped} looped\n"
+            f"source:\n"
+            f"  type: {fmt}\n"
+            f"  path: {_yaml_path(mapping)}\n"
+            f"\n"
+            f"profile: {preset_profile}\n"
+            f"\n"
+            f"analysis:\n"
+            f"  pitch_verify: false\n"
+            f"  loop_detect: false\n"
+            f"  trim: false\n"
+            f"  normalize: none\n"
+            f"\n"
+            f"capture:\n"
+            f"  note_step: {note_step}\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{preset_name}"\n'
+            f"{subfolder_line}"
+        )
+
+        target_dir = config_dir
+        for comp in subfolder.split("/"):
+            if comp:
+                target_dir = target_dir / comp
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out = target_dir / f"{_sanitize(preset_name)}.yaml"
+        out = _write_config_yaml(out, content, used_stems)
+        summary.written.append(out)
+        if flags:
+            summary.reviews.append(
+                (preset_name, ProbeResult(duration_s=0.0, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
+            )
+
+    return summary
+
+
 def scan_wavetables(
     folder: Path,
     config_dir: Path,
     archetype: str | None = None,
     debug: bool = False,
+    pair: bool = False,
 ) -> ScanSummary:
     """Generate one config per WAV in a folder of Serum-format wavetable files.
+
+    With `pair`, one config per *pair* of files instead: each table is matched with a
+    close relative of itself (analysis/wavetable.py:pair_tables) and the config's
+    `source.partner` names the second one, for the Bento's two-table patches.
 
     Each file's own spectral content picks its archetype (envelope/filter shape) and
     two continuous parameters (WT scan start position, LFO2-depth) — see
@@ -1297,13 +1460,27 @@ def scan_wavetables(
     wavs = sorted(folder.glob("*.wav", case_sensitive=False))
     if debug:
         wavs = wavs[:5]
+    partners: dict[Path, Path] = {}
+    if pair:
+        vecs = {w: table_vector(AudioBuffer.from_file(w)) for w in tqdm(wavs, desc=f"Fingerprinting {folder.name}", unit="file")}
+        usable = [w for w in wavs if vecs[w] is not None]
+        partners = {usable[i]: usable[j] for i, j in pair_tables([vecs[w] for w in usable])}
+        wavs = list(partners)
     summary = ScanSummary(total=len(wavs))
     used_stems: set[str] = set()
 
     for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
-        preset_name = wav.stem
+        partner = partners.get(wav)
+        preset_name = f"{wav.stem}+{partner.stem}" if partner else wav.stem
         audio = AudioBuffer.from_file(wav)
         result = classify_archetype(audio)
+        if partner is not None:
+            # The patch's numbers are the two tables' average; archetype, envelope shape
+            # and tag come from the first.
+            other = classify_archetype(AudioBuffer.from_file(partner))
+            for f in ("wt_position", "lfo2_rate", "lfo2_depth", "filter_cutoff"):
+                setattr(result, f, (getattr(result, f) + getattr(other, f)) / 2)
+            result.flags = sorted(set(result.flags) | set(other.flags))
         if archetype is not None:
             t = _ARCHETYPES[archetype]
             result.archetype = archetype
@@ -1319,7 +1496,8 @@ def scan_wavetables(
             f"source:\n"
             f"  type: wavetable\n"
             f"  path: {_yaml_path(wav)}\n"
-            f"\n"
+            + (f"  partner: {_yaml_path(partner)}\n" if partner else "")
+            + f"\n"
             f"wavetable:\n"
             f"  archetype: {result.archetype}\n"
             f"  wt_position: {result.wt_position:.4f}\n"
@@ -1348,6 +1526,49 @@ def scan_wavetables(
                 )
             )
 
+    return summary
+
+
+def scan_granular(folder: Path, config_dir: Path, debug: bool = False) -> ScanSummary:
+    """Generate one config per WAV in a folder of sounds to play on the Bento's grain engine.
+
+    Each sound becomes one granular patch (two grain oscillators reading excerpts of it, see
+    io/exporters/bento.py). All a scan decides is where to hold the cloud -- the sound's
+    steadiest loud stretch (analysis/granular.py) -- and it flags a sound too short to have
+    one. See docs/inputs/granular.md.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    wavs = sorted(folder.glob("*.wav", case_sensitive=False))
+    if debug:
+        wavs = wavs[:5]
+    summary = ScanSummary(total=len(wavs))
+    used_stems: set[str] = set()
+
+    for wav in tqdm(wavs, desc=f"Scanning {folder.name}", unit="file"):
+        audio = AudioBuffer.from_file(wav)
+        seconds = audio.data.shape[1] / audio.sample_rate
+        flags = [f"only {seconds:.1f} s long -- too short to hold a grain cloud"] if seconds < MIN_SECONDS else []
+        pos = stable_position(audio)
+        review_line = f"# REVIEW: {', '.join(flags)}\n" if flags else ""
+        content = (
+            f"{review_line}"
+            f"source:\n"
+            f"  type: granular\n"
+            f"  path: {_yaml_path(wav)}\n"
+            f"\n"
+            f"granular:\n"
+            f"  freeze_pos: {pos:.4f}\n"
+            f"  tag_hint: texture\n"
+            f"\n"
+            f"output:\n"
+            f'  name: "{wav.stem}"\n'
+        )
+        out = _write_config_yaml(config_dir / f"{_sanitize(wav.stem)}.yaml", content, used_stems)
+        summary.written.append(out)
+        if flags:
+            summary.reviews.append(
+                (wav.stem, ProbeResult(duration_s=seconds, release_tail_s=0.0, sustains=True, confidence="high", flags=flags))
+            )
     return summary
 
 

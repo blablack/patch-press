@@ -8,6 +8,7 @@ from ..profiles import load_profile
 from .schema import (
     AnalysisConfig,
     BitwigSourceConfig,
+    MappedSourceConfig,
     CaptureConfig,
     CLAPSourceConfig,
     LibrarySourceConfig,
@@ -17,11 +18,13 @@ from .schema import (
     VSTSourceConfig,
     WavetableConfig,
     WavetableSourceConfig,
+    GranularConfig,
+    GranularSourceConfig,
 )
 
 log = logging.getLogger(__name__)
 
-_TOP_LEVEL_KEYS = {"source", "capture", "analysis", "output", "profile", "name", "category", "wavetable", "performance"}
+_TOP_LEVEL_KEYS = {"source", "capture", "analysis", "output", "profile", "name", "category", "wavetable", "granular", "performance"}
 _VOICE_MODES = {"poly", "mono", "legato"}
 
 
@@ -103,8 +106,19 @@ def load_config(path: Path) -> RunConfig:
             path=_abspath(src["path"]),
             velocity=src.get("velocity", 100),
         )
+    elif src["type"] in ("sfz", "kontakt"):
+        source = MappedSourceConfig(
+            path=_abspath(src["path"]),
+            format=src["type"],
+            velocity=src.get("velocity", 100),
+        )
     elif src["type"] == "wavetable":
-        source = WavetableSourceConfig(path=_abspath(src["path"]))
+        source = WavetableSourceConfig(
+            path=_abspath(src["path"]),
+            partner=_abspath(src["partner"]) if src.get("partner") else None,
+        )
+    elif src["type"] == "granular":
+        source = GranularSourceConfig(path=_abspath(src["path"]))
     else:
         raise ValueError(f"Unknown source type: {src['type']!r}")
 
@@ -162,6 +176,13 @@ def load_config(path: Path) -> RunConfig:
         else None
     )
 
+    gr = raw.get("granular")
+    granular = (
+        GranularConfig(freeze_pos=float(gr.get("freeze_pos", 0.5)), tag_hint=gr.get("tag_hint", "texture"))
+        if gr is not None
+        else None
+    )
+
     perf = raw.get("performance") or {}
     _warn_unknown("performance", perf, {f.name for f in fields(PerformanceConfig)}, path)
     performance = PerformanceConfig(**{k: v for k, v in perf.items() if k in {f.name for f in fields(PerformanceConfig)}})
@@ -177,5 +198,6 @@ def load_config(path: Path) -> RunConfig:
         name=raw.get("name", output.name),
         category=raw.get("category", "synth"),
         wavetable=wavetable,
+        granular=granular,
         performance=performance,
     )

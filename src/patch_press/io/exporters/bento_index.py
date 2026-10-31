@@ -44,13 +44,13 @@ _TAGS = (
 # "Orchestral Woodwinds", "Distant Choir"), so this reads their vocabulary rather than
 # re-deriving one. Every value is from `_TAGS`; anything else the device drops.
 _KEYWORDS = {
-    "Bass": ("bass", "basses", "sub", "subbass"),
-    "Lead": ("lead", "leads"),
-    "Pad": ("pad", "pads"),
+    "Bass": ("bass", "basses", "bassics", "sub", "subbass"),
+    "Lead": ("lead", "leads", "leaders"),
+    "Pad": ("pad", "pads", "fillers"),
     "Keys": ("key", "keys", "keyboard", "keyboards", "piano", "pianos", "rhodes",
-             "wurlitzer", "wurli", "clav", "clavinet", "chord", "chords", "mallet",
+             "wurlitzer", "wurli", "clav", "clavinet", "chord", "chords", "mallet", "pianoids",
              "bell", "bells", "harpsichord", "celeste"),
-    "Organ": ("organ", "organs", "farfisa", "hammond", "leslie"),
+    "Organ": ("organ", "organs", "orgones", "farfisa", "hammond", "leslie"),
     "Strings": ("string", "strings", "violin", "violins", "cello", "cellos", "viola",
                 "pizzicato", "pizz"),
     "Orchestral": ("orchestral", "orchestra", "brass", "horn", "horns", "trumpet",
@@ -60,7 +60,7 @@ _KEYWORDS = {
     "Vocal": ("vocal", "vocals", "vox", "voice", "voices", "choir", "chant", "chants",
               "female", "male"),
     "Guitar": ("guitar", "guitars", "gtr"),
-    "Percussion": ("perc", "percs", "percussion", "percussive", "conga", "congas",
+    "Percussion": ("perc", "percs", "percussion", "perkers", "conga", "congas",
                    "bongo", "bongos", "shaker", "tambourine", "cowbell", "claves",
                    "maracas"),
     "Drum": ("drum", "drums", "drumkit", "kit", "kits", "kick", "snare", "hat", "hats",
@@ -107,15 +107,26 @@ def said_by_tags(label: str) -> bool:
     return bool(words) and all(w in _WORD_FOR_TAG for w in words)
 
 
+# A label word that names a theme rather than an instrument: Diva's "4 DREAM SYNTH" bank holds
+# pianos, flutes and organs as well as pads, and tagging every one of them Atmosphere is
+# noise in a filter. It only counts when the preset's own name says nothing about itself.
+_THEME_WORDS = frozenset({"dream", "dreams", "dreamy"})
+
+
 def derive_tags(category: Category, collection: str, sub: list[str], name: str) -> list[str]:
     """Pick up to three of the Bento's 15 tags for one preset.
 
     Read in order of how much the source trusted the label: the deepest source folder
     first (that's the library's own category — "01. Bass", "Orchestral Woodwinds"),
     then the shallower ones, then the collection, and only then the preset's own name.
-    A kit is a `Drum` before anything else, since that is what the browser filter is
-    for. Anything with no signal at all lands on `Synth`, the tag the factory bank
-    itself uses for three quarters of its melodic patches.
+    Anything with no signal at all lands on `Synth`, the tag the factory bank itself
+    uses for three quarters of its melodic patches.
+
+    Two cases the label order alone gets wrong. A kit is a `Drum` and stays one: a
+    word in its name ("Brass Knuckle Kit", "Hells Bells Kit", "Heavy Impact") describes
+    the kit's character, not what is in it, so only `Percussion` can join `Drum`. And a
+    theme word in a label (`_THEME_WORDS`) is held back unless the preset's own name
+    gave no tag at all.
     """
     tags: list[str] = []
 
@@ -123,14 +134,32 @@ def derive_tags(category: Category, collection: str, sub: list[str], name: str) 
         if tag not in tags and len(tags) < _MAX_TAGS:
             tags.append(tag)
 
+    labels = (*reversed(sub), collection)
+
     if category == Category.DRUM:
         add("Drum")
+        for source in (*labels, name):
+            if any(_WORD_FOR_TAG.get(token) == "Percussion" for token in _words(source)):
+                add("Percussion")
+        return tags
 
-    for source in (*reversed(sub), collection, name):
+    # Candidates in the order they were read, so a held-back theme tag still sits where it
+    # always did when it ends up kept; only the cap and `named` decide what survives.
+    candidates: list[tuple[str, bool]] = []  # (tag, comes from a theme word)
+    for source in labels:
         for token in _words(source):
             tag = _WORD_FOR_TAG.get(token)
             if tag:
-                add(tag)
+                candidates.append((tag, token in _THEME_WORDS))
+    named = False
+    for token in _words(name):
+        tag = _WORD_FOR_TAG.get(token)
+        if tag:
+            named = True
+            candidates.append((tag, False))
+    for tag, theme in candidates:
+        if not (theme and named):
+            add(tag)
 
     if not tags:
         add("Synth")

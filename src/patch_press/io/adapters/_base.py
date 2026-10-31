@@ -124,7 +124,7 @@ class PluginAdapterBase(Generic[_ConfigT]):
         """Render the config's note grid, or just `notes` when the caller narrows it.
 
         `notes` exists so a run whose target format ships fewer notes than the grid
-        (a .pti synth preset is one repitched sample) doesn't render captures that
+        (a kit pad is one sample) doesn't render captures that
         would only be discarded at export — see runner/pipeline.py:notes_to_capture.
         """
         preset_name = self._config.preset or Path(str(self._config.plugin)).stem
@@ -165,7 +165,7 @@ class PluginAdapterBase(Generic[_ConfigT]):
                             # signal (analysis/channels.py). Fold them here, at the top of
                             # the pipeline, rather than at each exporter: the buffer stays
                             # the (2, N) every analysis stage expects, but both channels are
-                            # now literally equal, so the .pti writer's own exact-equality
+                            # now literally equal, so an exporter's own exact-equality
                             # mono test agrees with the flag instead of being a second,
                             # differently-tuned opinion.
                             audio = AudioBuffer(data=audio.to_mono(), sample_rate=audio.sample_rate)

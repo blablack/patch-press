@@ -34,7 +34,9 @@ from ..runner.scan import (
     scan_from_probe,
     scan_kit_assemble,
     scan_library,
+    scan_mapped,
     scan_oneshots,
+    scan_granular,
     scan_wavetables,
 )
 
@@ -198,6 +200,26 @@ def cmd_scan_oneshots(args: argparse.Namespace) -> None:
             print(f"  - {name}: {detail}")
 
 
+def cmd_scan_mapped(args: argparse.Namespace) -> None:
+    summary = scan_mapped(
+        folder=args.folder.resolve(),
+        config_dir=args.config_dir,
+        fmt=args.fmt,
+        profile=args.profile,
+        note_step=args.note_step,
+        strip_suffix=args.strip_suffix,
+        name_from_folder=args.name_from_folder,
+        split_prefix=args.split_prefix,
+        debug=args.debug,
+    )
+    print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} preset(s) flagged for review:")
+        for name, result in summary.reviews:
+            detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
+            print(f"  - {name}: {detail}")
+
+
 def cmd_scan_bitwig(args: argparse.Namespace) -> None:
     summary = scan_bitwig(
         folder=args.folder.resolve(),
@@ -222,6 +244,7 @@ def cmd_scan_wavetables(args: argparse.Namespace) -> None:
         config_dir=args.config_dir,
         archetype=args.archetype,
         debug=args.debug,
+        pair=args.pair,
     )
     print(
         f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}"
@@ -231,6 +254,15 @@ def cmd_scan_wavetables(args: argparse.Namespace) -> None:
         for name, result in summary.reviews:
             detail = ", ".join(result.flags) if result.flags else f"confidence={result.confidence}"
             print(f"  - {name}: {detail}")
+
+
+def cmd_scan_granular(args: argparse.Namespace) -> None:
+    summary = scan_granular(folder=args.folder.resolve(), config_dir=args.config_dir, debug=args.debug)
+    print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
+    if summary.reviews:
+        print(f"\n{len(summary.reviews)} sound(s) flagged for review:")
+        for name, result in summary.reviews:
+            print(f"  - {name}: {', '.join(result.flags)}")
 
 
 def cmd_assemble_kits(args: argparse.Namespace) -> None:
@@ -310,7 +342,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format: deluge | pti | bento",
+        help="Output format: deluge | bento",
     )
     sample_p.add_argument(
         "--workers",
@@ -336,7 +368,7 @@ def main() -> None:
         "--format",
         required=True,
         metavar="FORMAT",
-        help="Output format: deluge | pti | bento",
+        help="Output format: deluge | bento",
     )
     batch_p.add_argument(
         "--workers",
@@ -630,6 +662,44 @@ def main() -> None:
         help=f"Semitones between kept notes (1=every mapped note; default: {DEFAULT_NOTE_STEP})",
     )
 
+    # patch-press scan-sfz "input/Samples from Mars/Synths/junos_from_mars" configs/Junos
+    # patch-press scan-kontakt "input/Wave Alchemy/Midnight Drive/Kontakt" configs/MidnightDrive
+    for fmt, noun in (("sfz", "SFZ"), ("kontakt", "Kontakt NKI")):
+        scan_mapped_p = sub.add_parser(
+            f"scan-{fmt}",
+            help=f"Generate one config per {noun} instrument (searched recursively)",
+        )
+        scan_mapped_p.set_defaults(fmt=fmt)
+        scan_mapped_p.add_argument("folder", type=Path, help=f"Folder containing {noun} files (searched recursively)")
+        scan_mapped_p.add_argument("config_dir", type=Path, help="Directory to write generated YAML configs")
+        scan_mapped_p.add_argument(
+            "--profile",
+            choices=["pluck", "synth", "pad", "drums"],
+            default=None,
+            help="Override auto-detected profile (synth if most zones loop, else pluck)",
+        )
+        scan_mapped_p.add_argument(
+            "--note-step",
+            type=_note_step_arg,
+            default=DEFAULT_NOTE_STEP,
+            help=f"Semitones between kept notes (1=every mapped note; default: {DEFAULT_NOTE_STEP})",
+        )
+        scan_mapped_p.add_argument(
+            "--strip-suffix",
+            default="",
+            help="Text removed from the end of every preset name (e.g. ' - Kawaii Dreams From Mars')",
+        )
+        scan_mapped_p.add_argument(
+            "--name-from-folder",
+            action="store_true",
+            help="Name a preset after the WAV folder it plays from (when that folder is its alone), as the WAV scan would",
+        )
+        scan_mapped_p.add_argument(
+            "--split-prefix",
+            action="store_true",
+            help="Turn 'Category - Name' file names into a Category subfolder and the name 'Name'",
+        )
+
     # patch-press scan-wavetables "input/Echo Sound Works Core Tables/Basics" configs/EchoTables
     scan_wavetables_p = sub.add_parser(
         "scan-wavetables",
@@ -649,6 +719,20 @@ def main() -> None:
              "sustaining or evolving; `percussive` is available here only, because "
              "nothing in a single-cycle table says a patch should be played short.",
     )
+    scan_wavetables_p.add_argument(
+        "--pair",
+        action="store_true",
+        help="One config per PAIR of tables (each matched with a close relative) for the "
+             "Bento's two-table patches; the Deluge ignores the partner.",
+    )
+
+    # patch-press scan-granular input/Granular configs/Granular --format bento
+    scan_granular_p = sub.add_parser(
+        "scan-granular",
+        help="Generate one Bento granular-patch config per WAV in a folder of sounds",
+    )
+    scan_granular_p.add_argument("folder", type=Path, help="Folder of WAV sounds (one patch per file)")
+    scan_granular_p.add_argument("config_dir", type=Path, help="Directory to write generated YAML configs")
 
     # patch-press assemble-kits "909_from_mars/Individual Hits" configs/909Assembled
     assemble_kits_p = sub.add_parser(
@@ -736,8 +820,12 @@ def main() -> None:
         cmd_scan_oneshots(args)
     elif args.command == "scan-bitwig":
         cmd_scan_bitwig(args)
+    elif args.command in ("scan-sfz", "scan-kontakt"):
+        cmd_scan_mapped(args)
     elif args.command == "scan-wavetables":
         cmd_scan_wavetables(args)
+    elif args.command == "scan-granular":
+        cmd_scan_granular(args)
     elif args.command == "assemble-kits":
         cmd_assemble_kits(args)
     elif args.command == "classify":

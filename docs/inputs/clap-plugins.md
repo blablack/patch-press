@@ -100,5 +100,5 @@ Identical to the VST path:
 
 ```bash
 patch-press batch "configs/SurgeXT/*.yaml" --path /media/DELUGE --format deluge
-# ...or --path staging/Polyend --format pti for a Polyend Tracker instrument
+# ...or --path staging/Bento --format bento for a Bento patch
 ```

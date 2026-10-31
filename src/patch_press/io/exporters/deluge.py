@@ -308,6 +308,8 @@ class DelugeExporter:
         return [_velocity_pick(velocities)]
 
     def export(self, sset: SampleSet, config: OutputConfig, path: Path) -> Path:
+        if sset.category == Category.GRANULAR:
+            raise ValueError(f"{config.name}: granular patches are Bento-only (the Deluge has no grain engine)")
         safe_name = safe_component(config.name)
         # An optional subfolder tree (config.subfolder) is inserted after the collection
         # so presets can mirror their source's own folder organisation on the card.

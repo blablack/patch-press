@@ -136,8 +136,7 @@ def _collapse_velocity_layers(wavs: list[Path]) -> list[Path]:
     completely unaffected.
 
     The kit hardware this feeds has no round-robin or velocity engine (every kit exporter
-    picks a single sample per pad — see bento.py `_kit_pads`, deluge.py `_export_kit`,
-    polyend.py `_export_kit`), so one representative file is picked per instrument: round
+    picks a single sample per pad — see bento.py `_kit_pads`, deluge.py `_export_kit`), so one representative file is picked per instrument: round
     robin 1 (arbitrary — round robins of the same hit are interchangeable), and one
     velocity layer below the loudest. Verified on Just Add Drums by measuring actual peak
     level per V-number: V01 is softest and V-max is loudest (often borderline-clipped) —

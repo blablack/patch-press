@@ -50,6 +50,8 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 from lxml import etree
 
 from ...analysis.drumkit import classify_instrument
@@ -85,6 +87,7 @@ _MARKER_TEXT = "Written by patch-press. prepare-sd-cards manages every folder th
 _TYPE_MULTISAMPLE = "SampInst"
 _TYPE_KIT = "OneShots"
 _TYPE_WAVETABLE = "Wavetable"
+_TYPE_GRANULAR = "Granular"
 
 # Every factory kit has exactly 16 pads (416 saminst cells across 26 kits), addressed
 # by `celldisppos` 0-15. The hardware grid is two rows of 8 (confirmed against the
@@ -193,6 +196,16 @@ _WT_POS_MAX = 255
 # the second (Bigbrute: 11 cents apart, wavepos modulated +481 / -503). Same here — the
 # cell exists either way, and silencing it would throw away the width for nothing.
 _WT_DETUNE = 60
+
+# "Stack" patches (two different tables, `source.partner`) are wired like the factory's
+# 28 two-table patches: a filter envelope + key tracking + the X pad on the cutoff,
+# vibrato from LFO 2 that the mod wheel brings in. Amounts are the middle of the factory
+# bank's range for each routing and are starting values to tune by ear, NOT derived.
+_STACK_CUTOFF_MODS = (("env2", 500), ("macrox", 400), ("key", 200))  # (source, amount) per cutoff slot
+_STACK_ENV2_SUSTAIN = 300
+_STACK_VIBRATO = 150  # LFO 2 -> pitch, per wavetable cell
+_STACK_VIBRATO_RATE = 765
+_STACK_WHEEL_VIBRATO = 400  # mod wheel -> LFO 2 amount
 
 # Our archetypes only ever ask for a low-pass. Filter `Type` is 0..3 in the factory bank
 # and 0 is both the most common and the one every bright/dark cutoff sweep in it uses.
@@ -521,9 +534,8 @@ def _saminst_params(
         "loopmodes": loopmodes,
         "reverse": "0",
         # Flat volume envelope: the capture already contains the source patch's own
-        # attack and decay, so re-applying them here would stack the swell twice (the
-        # same reason the .pti exporter ships a flat envelope). The 200/1000 release is
-        # what the device itself writes for an untouched instrument.
+        # attack and decay, so re-applying them here would stack the swell twice. The 200/1000
+        # release is what the device itself writes for an untouched instrument.
         "envattack": "0",
         "envdecay": "0",
         "envsus": "1000",
@@ -635,6 +647,113 @@ def _write_wavs(sset: SampleSet, samples: Iterable[Sample], patch_dir: Path) -> 
             write_sample_wav(s, p)
         paths[(s.note, s.velocity, s.round_robin)] = p
     return paths
+
+
+def _write_partner_table(sset: SampleSet, patch_dir: Path, wav_paths: dict) -> Path | None:
+    """A "stack" wavetable patch's second table, mono and beside the first.
+
+    Kept out of `sset.samples` on purpose (see WavetableAdapter): to every other
+    stage a wavetable set is still one table. Named after its source file unless
+    that is also the first table's name."""
+    partner = sset.source_metadata.get("partner")
+    if partner is None:
+        return None
+    src = Path(partner)
+    taken = {p.name for p in wav_paths.values()}
+    name = src.name if src.name not in taken else f"2_{src.name}"
+    dest = patch_dir / name
+    write_wavetable_wav(src, dest)
+    return dest
+
+
+# --- granular (`grtrack`) ------------------------------------------------------------
+# The Bento's grain engine (`grainosc`) plays a source sound as a cloud of short grains.
+# Every one of the 50 factory Granular patches has exactly two grain oscillators, each on
+# its own mono 48 kHz (24-bit in 98 of 100) WAV, plus a silenced-able analog osc, two
+# filters, two envelopes, two LFOs, the modulation sequencer, part parameters and three
+# effects. The recipe below is the factory's own median patch: every value is the median
+# of the factory cells in that role (one oscillator *held* on a frozen position, the other
+# *moving* through the sound), and every routing is one the factory bank uses most --
+# pitch from LFO 1, the freeze position scanned by LFO 2, grain size and density on the
+# XY pad's two macros. Starting values to tune by ear, NOT derived and not heard.
+_GR_SR = 48000
+_GR_MAX_S = 12.0  # an excerpt is capped here: the factory's median source is 9 s, its max 58 s
+_GR_PEAK = 0.89
+
+# Grain oscillator parameters in the device's attribute order; `filename` etc. are added per patch.
+_GR_HELD = dict(
+    pitch="0", level="950", grainbeatsync="0", grainbeatrate="10", graindensity="548", grainsizeperc="787",
+    grainshape="0", gainssrcwin="487", grainjitter="0", grainpanrnd="718", grainfreezemode="1",
+    grainfreezepos="0", samstart="0", samstartpercent="0", grainreadspeed="640", grainliveinpos="0",
+    grainsaveattack="1", grainpitchpatt="0", graindetune="105", grainliveinput="0", loopmodes="0",
+    samlen="0", wavesel="0",
+)
+_GR_MOVING = dict(
+    _GR_HELD, level="940", graindensity="537", grainsizeperc="814", gainssrcwin="850", grainjitter="136",
+    grainpanrnd="978", grainfreezemode="0", grainfreezepos="70", grainreadspeed="645", graindetune="66",
+)
+# (dest, source, amount) per grain oscillator; slot is 0 for each (one source per destination).
+_GR_HELD_MODS = (("pitch", "lfo1", 100), ("grainfreezepos", "lfo2", 383), ("grainsizeperc", "macrox", -250),
+                 ("graindensity", "macroy", 207))
+_GR_MOVING_MODS = (("pitch", "lfo1", 100), ("grainfreezepos", "lfo2", 390), ("grainsizeperc", "macrox", -240),
+                   ("graindensity", "macroy", 185))
+_GR_WHEEL_VIBRATO = 300  # mod wheel -> LFO 1 amount, so the pitch vibrato comes in with the wheel
+_GR_CHORUS = (214, 172)  # amount, rate
+_GR_REVERB = dict(amount="211", decay="714", predelay="316", damping="262")
+
+
+def _gr_track_params() -> dict:
+    """Track-level parameters of a `grtrack`, byte-identical across all 50 factory patches."""
+    return {
+        "selcellpos": "0", "celldisppos": "0", "cellname": "", "selseqpos": "0", "out3gain": "0",
+        "fx1send": "0", "fx2send": "0", "outputbus": "0", "midiinport": "0", "midiinchan": "0",
+        "cc1inport": "0", "cc1inchan": "0", "cc2inport": "0", "midioutport": "0", "midioutchan": "0",
+        "padrowoffset": "0",
+    }
+
+
+def _grain_excerpts(src: Path, freeze_pos: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """The two excerpts the grain oscillators read, and where the held cloud sits in the first.
+
+    Mono 48 kHz, peak-levelled: the factory's sources are 98% mono and the grain engine
+    scatters grains across the stereo field itself (`grainpanrnd`). A sound up to the cap is
+    used whole by both oscillators; a longer one gives the held oscillator the stretch around
+    its steadiest moment and the moving one the far end of the sound, so the two clouds read
+    different material the way the factory's two-file patches do.
+    """
+    data, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    mono = data.mean(axis=1)
+    if sr != _GR_SR:
+        import soxr  # deferred, like the preview: keeps the C extension off the import path
+
+        mono = soxr.resample(mono, sr, _GR_SR, quality="HQ").astype(np.float32)
+    n, cap = len(mono), int(_GR_MAX_S * _GR_SR)
+    if n <= cap:
+        a, b, rel = mono, mono, freeze_pos
+    else:
+        centre = freeze_pos * n
+        start = int(min(max(centre - cap / 2, 0), n - cap))
+        a = mono[start : start + cap]
+        rel = (centre - start) / cap
+        b = mono[:cap] if start >= n - cap - start else mono[n - cap :]
+
+    def level(x: np.ndarray) -> np.ndarray:
+        peak = float(np.abs(x).max())
+        return (x * (_GR_PEAK / peak)).astype(np.float32) if peak > 0 else x
+
+    return level(a), level(b), float(min(1.0, max(0.0, rel)))
+
+
+def _write_grain_sources(sset: SampleSet, name: str, patch_dir: Path) -> tuple[tuple[Path, Path], float]:
+    """Cut and write the two grain-source WAVs next to `patch.xml`; returns their paths and
+    the held cloud's position within the first (0..1)."""
+    gr = sset.source_metadata["granular"]
+    a, b, rel = _grain_excerpts(Path(sset.samples[0].metadata["source_file"]), gr.freeze_pos if gr else 0.5)
+    stem = safe_component(name)
+    paths = (patch_dir / f"{stem}.wav", patch_dir / f"{stem}_2.wav")
+    for audio, dest in zip((a, b), paths):
+        sf.write(str(dest), audio, _GR_SR, subtype="PCM_24")
+    return paths, rel
 
 
 def _select_pads(by_note: dict[int, list[Sample]], limit: int) -> list[int]:
@@ -752,6 +871,9 @@ def _tag_name(sset: SampleSet, name: str) -> str:
     This reads `tag_hint`, not `archetype`: the archetype is an envelope choice with
     only three values, none of which describe a timbre. See analysis/wavetable.py.
     """
+    if sset.category == Category.GRANULAR:
+        gr = sset.source_metadata.get("granular")
+        return f"{name} {gr.tag_hint}" if gr is not None else name
     if sset.category != Category.WAVETABLE:
         return name
     wt = sset.source_metadata.get("wavetable")
@@ -777,6 +899,27 @@ def _centered_ranges(values: Sequence[int], lo: int, hi: int) -> list[tuple[int,
     return ranges
 
 
+def _key_ranges(notes: Sequence[int], authored: dict[int, tuple[int, int]]) -> dict[int, tuple[int, int]]:
+    """Key range per root note: centred on the root (see _centered_ranges), except for a
+    note whose source authored it onto other keys than its own pitch (`authored`, from the
+    Kontakt/SFZ zone). Those keep the authored keys, and the centred ranges of the other
+    notes are clipped around them so no key is claimed twice. An authored range that
+    swallows another note's own root is ignored: that note must keep its key.
+    """
+    authored = {n: r for n, r in authored.items() if not any(r[0] <= m <= r[1] for m in notes if m != n)}
+    regular = [n for n in notes if n not in authored]
+    ranges = dict(zip(regular, _centered_ranges(regular, 0, 127)))
+    for lo, hi in authored.values():
+        for n, (bottom, top) in ranges.items():
+            if n < lo:
+                top = min(top, lo - 1)
+            elif n > hi:
+                bottom = max(bottom, hi + 1)
+            ranges[n] = (bottom, top)
+    ranges.update(authored)
+    return ranges
+
+
 def _shipped(sset: SampleSet, kit_pads: tuple | None = None) -> list[Sample]:
     """The samples the patch.xml will reference, and so the only WAVs written.
 
@@ -790,6 +933,8 @@ def _shipped(sset: SampleSet, kit_pads: tuple | None = None) -> list[Sample]:
         return [by_note[n][0] for n in pads]
     if sset.category == Category.WAVETABLE:
         return [sset.samples[0]]
+    if sset.category == Category.GRANULAR:
+        return []  # the grain excerpts are cut and written by _write_grain_sources
     layers: dict[tuple[int, int], Sample] = {}
     for s in sset.samples:
         key = (s.note, s.velocity)
@@ -865,7 +1010,7 @@ class BentoExporter:
         flat = _patch_folder(output, path)
         return [
             path.parent.joinpath(_PATCH_ROOT, kind, flat, "patch.xml")
-            for kind in (_TYPE_MULTISAMPLE, _TYPE_KIT, _TYPE_WAVETABLE)
+            for kind in (_TYPE_MULTISAMPLE, _TYPE_KIT, _TYPE_WAVETABLE, _TYPE_GRANULAR)
         ]
 
     @classmethod
@@ -907,9 +1052,8 @@ class BentoExporter:
     def keeps_velocity_layers(cls) -> bool:
         """Yes. `SampInst` genuinely has a velocity-zone engine — confirmed against the
         factory bank (11 of 65 patches ship real per-note velocity zones, up to 4 layers,
-        e.g. Medium Muff) — unlike Deluge's `<sampleRange>` (no velocity attribute at all)
-        or `.pti` (one embedded sample, no zoning of any kind). So a source capable of
-        capturing more than one velocity per note should be asked to, when building for
+        e.g. Medium Muff) — unlike Deluge's `<sampleRange>` (no velocity attribute at all). So a source
+        capable of capturing more than one velocity per note should be asked to, when building for
         this format — see runner/pipeline.py and io/adapters/bitwig.py
         `keep_velocity_layers`. `_build_multisample` does the actual zoning; every other
         exporter still collapses to one sample per note regardless of what it's handed.
@@ -922,6 +1066,7 @@ class BentoExporter:
         kind = {
             Category.DRUM: _TYPE_KIT,
             Category.WAVETABLE: _TYPE_WAVETABLE,
+            Category.GRANULAR: _TYPE_GRANULAR,
         }.get(sset.category, _TYPE_MULTISAMPLE)
         sub = subfolder_parts(config.subfolder)
         flat = _patch_folder(config, path)
@@ -934,6 +1079,10 @@ class BentoExporter:
             envrel = _capture_envrel(shipped)
             shipped = [_cut_at_loop_end(s) for s in shipped]
         wav_paths = _write_wavs(sset, shipped, patch_dir)
+        partner_wav = _write_partner_table(sset, patch_dir, wav_paths) if sset.category == Category.WAVETABLE else None
+        grain_wavs, freeze_rel = (
+            _write_grain_sources(sset, config.name, patch_dir) if sset.category == Category.GRANULAR else (None, 0.5)
+        )
 
         # Each branch also settles what its browser preview auditions: the kit's
         # post-thinning pad list, or the mono table copy the wavetable patch loads.
@@ -942,10 +1091,15 @@ class BentoExporter:
             by_note, pads, positions = kit
             doc = self._build_kit(wav_paths, by_note, pads, positions)
             preview["kit_samples"] = [by_note[n][0] for n in pads]
+        elif sset.category == Category.GRANULAR:
+            doc = self._build_granular(grain_wavs, freeze_rel)
+            preview["grain_wavs"] = grain_wavs
+            preview["freeze_rel"] = freeze_rel
         elif sset.category == Category.WAVETABLE:
-            doc = self._build_wavetable(sset, wav_paths)
+            doc = self._build_wavetable(sset, wav_paths, partner_wav.name if partner_wav else None)
             t = sset.samples[0]
             preview["table_wav"] = wav_paths[(t.note, t.velocity, t.round_robin)]
+            preview["partner_wav"] = partner_wav
         else:
             doc = self._build_multisample(sset, wav_paths, config.name, envrel)
 
@@ -982,7 +1136,9 @@ class BentoExporter:
         return xml_path
 
     # ------------------------------------------------------------------
-    def _build_wavetable(self, sset: SampleSet, wav_paths: dict[tuple[int, int, int], Path]):
+    def _build_wavetable(
+        self, sset: SampleSet, wav_paths: dict[tuple[int, int, int], Path], partner_name: str | None = None
+    ):
         """A `wttrack` playing one user table, shaped by the archetype scan-wavetables picked.
 
         The cell order is the factory bank's and does not vary: two wavetable cells,
@@ -1008,42 +1164,72 @@ class BentoExporter:
         track = etree.SubElement(session, "track", type="wttrack")
         _params(track, **_wt_track_params())
 
-        pos = str(round(max(0.0, min(1.0, wt.wt_position)) * _WT_POS_MAX))
-        depth = round(max(0.0, min(1.0, wt.lfo2_depth)) * 1000)
-        for detune, polarity in ((-_WT_DETUNE, 1), (_WT_DETUNE, -1)):
+        # The analysis' (wt_position, lfo2_depth) is a sweep from wt_position up to
+        # wt_position + lfo2_depth (it clamps the depth to the table left above). The
+        # Bento's LFO is bipolar around `wavepos` (the factory centres at 127/128 with
+        # ±~450), so a sweep centred on wt_position runs below frame 0 and the table
+        # wraps/pins there — heard as a jerk back to the first frame every LFO cycle.
+        # Centre on the middle of the intended range with half the depth either side.
+        start = max(0.0, min(1.0, wt.wt_position))
+        span = max(0.0, min(1.0 - start, wt.lfo2_depth))
+        pos = str(round((start + span / 2) * _WT_POS_MAX))
+        depth = round(span / 2 * 1000)
+        stack = partner_name is not None
+        for (detune, polarity), name in zip(((-_WT_DETUNE, 1), (_WT_DETUNE, -1)), (wav_name, partner_name or wav_name)):
             cell = _cell(
                 track, "wavetable",
                 pitch=str(detune), level="1000", wavesel=str(_WT_WAVESEL),
-                wavepos=pos, samlen="0", filename=wav_name,
+                wavepos=pos, samlen="0", filename=name,
             )
             etree.SubElement(cell, "modsource", dest="wavepos", src="lfo1",
                              slot="0", amount=str(depth * polarity))
+            if stack:
+                # LFO 2 -> pitch: vibrato, silent until the mod wheel raises LFO 2's amount
+                # (125 of the factory's wavetable cells carry it, always from LFO 2).
+                etree.SubElement(cell, "modsource", dest="pitch", src="lfo2",
+                                 slot="0", amount=str(_STACK_VIBRATO))
 
         # The analog oscillator sits alongside the wavetable pair and is silenced: the
         # preset is the table, and anything mixed under it is a sound the source file
         # never had.
         _cell(track, "osc", pitch="0", level="0", waveform="0", dutycyc="500")
 
-        _cell(track, "filter",
-              filtertype=str(_WT_FILTER_TYPES[wt.filter_type]),
-              cutoff=_p1000(wt.filter_cutoff), res="250",
-              filtenable="1", filtparallel="0")
+        filt = _cell(track, "filter",
+                     filtertype=str(_WT_FILTER_TYPES[wt.filter_type]),
+                     cutoff=_p1000(wt.filter_cutoff), res="250",
+                     filtenable="1", filtparallel="0")
+        if stack:
+            # The factory's filter recipe: a filter envelope (env 2 -> cutoff is on 117
+            # of its wavetable cells), key tracking, and the X pad.
+            for slot, (src, amount) in enumerate(_STACK_CUTOFF_MODS):
+                etree.SubElement(filt, "modsource", dest="cutoff", src=src, slot=str(slot), amount=str(amount))
         _cell(track, "filter", filtertype="0", cutoff="500", res="500",
               filtenable="0", filtparallel="0")
 
         _cell(track, "env",
               envattack=_p1000(wt.attack), envdecay=_p1000(wt.decay),
               envsus=_p1000(wt.sustain), envrel=_p1000(wt.release), velamount="0")
-        _cell(track, "env", envattack="0", envdecay="500", envsus="1000",
-              envrel="500", velamount="0")
+        if stack:
+            # The filter envelope: opens on the note and settles, shaped from the amp
+            # envelope's own decay/release so a long pad stays a long pad.
+            _cell(track, "env", envattack="0", envdecay=_p1000(wt.decay),
+                  envsus=str(_STACK_ENV2_SUSTAIN), envrel=_p1000(wt.release), velamount="0")
+        else:
+            _cell(track, "env", envattack="0", envdecay="500", envsus="1000",
+                  envrel="500", velamount="0")
 
         # LFO 1 sweeps the table (see the modsources above); LFO 2 is unrouted, so its
         # depth is zero rather than merely unconnected.
         rate = _p1000(wt.lfo2_rate)
-        _cell(track, "lfo", lfowave="0", lforate=rate, lfoamount="1000",
+        # Shape 2 is Triangle (0 is Rev Saw, whose reset every cycle is an audible jerk back
+        # to the first frame); it is also the factory's usual choice for a position LFO.
+        _cell(track, "lfo", lfowave="2", lforate=rate, lfoamount="1000",
               lfokeytrig="0", lfobeatsync="0", lforatebeatsync=rate)
-        _cell(track, "lfo", lfowave="0", lforate="500", lfoamount="0",
-              lfokeytrig="0", lfobeatsync="0", lforatebeatsync="500")
+        lfo2 = _cell(track, "lfo", lfowave="0", lforate=str(_STACK_VIBRATO_RATE if stack else 500), lfoamount="0",
+                     lfokeytrig="0", lfobeatsync="0", lforatebeatsync=str(_STACK_VIBRATO_RATE if stack else 500))
+        if stack:
+            etree.SubElement(lfo2, "modsource", dest="lfoamount", src="modwheel",
+                             slot="0", amount=str(_STACK_WHEEL_VIBRATO))
 
         seq = _cell(track, "seqmod", steplen="8", seqsteps="16", seqkeytrig="0",
                     seqquant="0", quantsize="0")
@@ -1063,6 +1249,55 @@ class BentoExporter:
               flangefeedback="0", distamount="0", phaseamount="0", phaselforate="500",
               phasefeedback="500", chorusamount="0", chorusrate="500", fx1send="0",
               fx2send="0", fx3type="0")
+        return doc
+
+    # ------------------------------------------------------------------
+    def _build_granular(self, grain_wavs: tuple[Path, Path], freeze_rel: float):
+        """A `grtrack`: two grain oscillators on two excerpts of one sound -- one held on its
+        steadiest moment, one moving through it -- under the factory's median patch (see the
+        `_GR_*` notes). The cell order is the most common of the factory's three layouts
+        (21 of 50) and does not vary: grainosc x2, osc, filter x2, env x2, lfo x2, seqmod,
+        partparms, chorus, reverb, fxlemon."""
+        doc = etree.Element("document")
+        session = etree.SubElement(doc, "session", version="1")
+        track = etree.SubElement(session, "track", type="grtrack")
+        _params(track, **_gr_track_params())
+
+        held = dict(_GR_HELD, grainfreezepos=str(round(freeze_rel * 1000)))
+        for params, mods, wav in ((held, _GR_HELD_MODS, grain_wavs[0]), (_GR_MOVING, _GR_MOVING_MODS, grain_wavs[1])):
+            cell = _cell(track, "grainosc", **params, filename=wav.name)
+            for dest, src, amount in mods:
+                etree.SubElement(cell, "modsource", dest=dest, src=src, slot="0", amount=str(amount))
+
+        # The analog oscillator is silenced: the preset is the sound it was made from.
+        _cell(track, "osc", pitch="0", level="0", waveform="3", dutycyc="500")
+
+        f1 = _cell(track, "filter", filtertype="0", cutoff="760", res="140", filtenable="1", filtparallel="0")
+        etree.SubElement(f1, "modsource", dest="cutoff", src="macrox", slot="0", amount="139")
+        _cell(track, "filter", filtertype="0", cutoff="585", res="160", filtenable="0", filtparallel="0")
+
+        _cell(track, "env", envattack="164", envdecay="466", envsus="1000", envrel="445", velamount="770")
+        _cell(track, "env", envattack="0", envdecay="738", envsus="36", envrel="500", velamount="1000")
+
+        lfo1 = _cell(track, "lfo", lfowave="2", lforate="770", lfoamount="0", lfokeytrig="0",
+                     lfobeatsync="0", lforatebeatsync="757")
+        etree.SubElement(lfo1, "modsource", dest="lfoamount", src="modwheel", slot="0", amount=str(_GR_WHEEL_VIBRATO))
+        _cell(track, "lfo", lfowave="2", lforate="182", lfoamount="1000", lfokeytrig="0",
+              lfobeatsync="0", lforatebeatsync="182")
+
+        # A granular patch's modulation sequencer has no `quantsize` (a wavetable's does).
+        seq = _cell(track, "seqmod", steplen="8", seqsteps="16", seqkeytrig="0", seqquant="0")
+        etree.SubElement(seq, "sequence")
+        _cell(track, "partparms", globtempo="120", unisonmode="0", unisondetune="0", unisonspread="0",
+              unisonvcount="4", oscphasereset="1", midibend="2", macroxsnap="0", macroysnap="0")
+
+        chorus_amount, chorus_rate = _GR_CHORUS
+        _cell(track, "chorus", amount=str(chorus_amount), chorrate=str(chorus_rate))
+        _cell(track, "reverb", **_GR_REVERB)
+        # The combined effects cell mirrors the individual ones, as in every factory patch.
+        _cell(track, "fxlemon", flangeamount="0", flangelforate="500", flangefeedback="600", distamount="0",
+              phaseamount="0", phaselforate="500", phasefeedback="500", chorusamount=str(chorus_amount),
+              chorusrate=str(chorus_rate), fx1send="0", fx2send=_GR_REVERB["amount"], fx3type="1")
         return doc
 
     # ------------------------------------------------------------------
@@ -1127,7 +1362,12 @@ class BentoExporter:
         # the capture step either way instead of a full step upwards), velocity ranges
         # centred on each layer's own velocity within a note — same centering, verified
         # against the factory's own multi-velocity patches (see _centered_ranges).
-        key_ranges = dict(zip(notes, _centered_ranges(notes, 0, 127)))
+        authored = {
+            n: tuple(r)
+            for n in notes
+            if (r := next((s.metadata["key_range"] for s in by_note[n].values() if "key_range" in s.metadata), None))
+        }
+        key_ranges = _key_ranges(notes, authored)
         cell_count = 0
         for note in notes:
             low, high = key_ranges[note]

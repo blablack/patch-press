@@ -22,7 +22,12 @@ class WavetableAdapter:
             audio=AudioBuffer.from_file(path),
             metadata={"source_file": str(path)},
         )
+        meta = {"path": str(path)}
+        if self._config.partner is not None:
+            # Not a second Sample: every exporter treats samples[0] as *the* table, and
+            # only the Bento has a second oscillator to give a partner to.
+            meta["partner"] = str(self._config.partner)
         return SampleSet(
             name=name or path.stem, category=Category.WAVETABLE,
-            samples=[sample], source_metadata={"path": str(path)},
+            samples=[sample], source_metadata=meta,
         )

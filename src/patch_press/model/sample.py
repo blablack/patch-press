@@ -9,6 +9,7 @@ class Category(str, Enum):
     SYNTH = "synth"
     DRUM = "drum"
     WAVETABLE = "wavetable"
+    GRANULAR = "granular"
 
 
 @dataclass

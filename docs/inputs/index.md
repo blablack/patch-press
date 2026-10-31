@@ -8,7 +8,7 @@ permalink: /inputs/
 
 # Inputs
 
-patch-press can consume eight different kinds of source. Each has a dedicated scan command that walks the source, figures out what it's looking at, and writes one YAML config per resulting preset.
+patch-press can consume several different kinds of source. Each has a dedicated scan command that walks the source, figures out what it's looking at, and writes one YAML config per resulting preset.
 
 ## Which command do I want?
 
@@ -21,7 +21,9 @@ patch-press can consume eight different kinds of source. Each has a dedicated sc
 | A **drum kit** in a flat folder | Loose one-shot WAVs; instrument encoded in filename | `scan-library --type drumkit` | [Sample libraries](sample-libraries.html) |
 | A folder of **single-note oneshots** | Each WAV is its own preset (Monosounds-style) | `scan-oneshots` | [Oneshots](oneshots.html) |
 | **Serum-format wavetables** | Each WAV = one wavetable; 2048-sample cycles | `scan-wavetables` | [Wavetables](wavetables.html) |
+| Any **sustained, tonal sound** for a Bento granular patch | Each WAV = one patch (Bento only) | `scan-granular` | [Granular](granular.html) |
 | A **Bitwig `.multisample`** instrument | ZIP of WAVs + a `multisample.xml` mapping | `scan-bitwig` | [Bitwig multisamples](bitwig.html) |
+| An **SFZ** or **Kontakt `.nki`** instrument | Mapping file + WAVs | `scan-sfz` / `scan-kontakt` | [SFZ and Kontakt](sfz-kontakt.html) |
 | A **bag-of-hits** drum library | Instrument categories × shared "flavor" subfolders | `assemble-kits` | [Kit assembly](kit-assembly.html) |
 
 ## The rough shape of every scan
@@ -35,7 +37,7 @@ Every scan command does roughly the same thing:
 
 You then run `patch-press batch "config-dir/*.yaml"` to actually export the presets.
 
-The YAML files are the seam between "figuring out what you've got" (scan) and "producing preset files for your target device" (`batch --format deluge|pti`). If the scan misidentified something — wrong profile, wrong root note, wrong root file — you can hand-edit the config and re-run just `sample` on that one, no re-scanning needed.
+The YAML files are the seam between "figuring out what you've got" (scan) and "producing preset files for your target device" (`batch --format deluge|bento`). If the scan misidentified something — wrong profile, wrong root note, wrong root file — you can hand-edit the config and re-run just `sample` on that one, no re-scanning needed.
 
 ## When scan writes a REVIEW flag
 
