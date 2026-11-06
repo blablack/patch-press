@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
+from ...cache import reference as ref_render
+from ...cache import renders as render_cache
 from ...progress import ProgressBar as tqdm
 from ...progress import suppressed_plugin_output
 from ...config.schema import CaptureConfig
@@ -61,37 +63,48 @@ class PluginAdapterBase(Generic[_ConfigT]):
         tempo_bpm: float = 120.0,
         sample_rate: int = _SAMPLE_RATE,
     ) -> AudioBuffer:
+        payload = {
+            "plugin": str(self._config.plugin),
+            "output": "",
+            "duration": total_s + _INIT_LEAD_S,
+            "sample_rate": float(sample_rate),
+            "raw_state": raw_state or "",
+            "bpm": tempo_bpm,
+            "midi": [
+                {
+                    "type": "note_on",
+                    "pitch": note,
+                    "vel": velocity,
+                    "time": _INIT_LEAD_S,
+                },
+                {
+                    "type": "note_off",
+                    "pitch": note,
+                    "vel": 0,
+                    "time": _INIT_LEAD_S + hold_s,
+                },
+            ],
+            **self._render_payload_extra(),
+        }
+        # Shared on-disk cache (patch_press.cache.renders): a hit skips the plugin entirely,
+        # and an entry rendered longer than asked is cut down, so one project's longer render
+        # serves another's shorter one.
+        key = render_cache.render_key(payload, hold_s)
+        cached = render_cache.lookup(key, payload["duration"], sample_rate)
+        if cached is not None:
+            return AudioBuffer(data=cached, sample_rate=sample_rate)
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
         try:
-            payload = {
-                "plugin": str(self._config.plugin),
-                "output": output_path,
-                "duration": total_s + _INIT_LEAD_S,
-                "sample_rate": float(sample_rate),
-                "raw_state": raw_state or "",
-                "bpm": tempo_bpm,
-                "midi": [
-                    {
-                        "type": "note_on",
-                        "pitch": note,
-                        "vel": velocity,
-                        "time": _INIT_LEAD_S,
-                    },
-                    {
-                        "type": "note_off",
-                        "pitch": note,
-                        "vel": 0,
-                        "time": _INIT_LEAD_S + hold_s,
-                    },
-                ],
-                **self._render_payload_extra(),
-            }
+            payload["output"] = output_path
             with suppressed_plugin_output():
                 self._invoke_render(payload, output_path)
-            return AudioBuffer.from_file(output_path)
+            audio = AudioBuffer.from_file(output_path)
         finally:
             os.unlink(output_path)
+        render_cache.store(key, payload["duration"], audio.data)
+        return audio
 
     def render_note(
         self,
@@ -184,6 +197,13 @@ class PluginAdapterBase(Generic[_ConfigT]):
         finally:
             if own_bar:
                 pbar.close()
+
+        # Also render the shared reference note (cache/reference.py). Its audio is thrown away
+        # here; the point is the cache entry, which patch-ear then hits instead of rendering.
+        self.render_note(
+            ref_render.NOTE, ref_render.VELOCITY, ref_render.HOLD_S, ref_render.TOTAL_S,
+            capture.tempo_bpm, capture.sample_rate,
+        )
 
         return SampleSet(
             name=sset_name,
