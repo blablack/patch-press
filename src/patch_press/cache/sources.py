@@ -36,6 +36,18 @@ def _store() -> Path:
     return cache_root() / "source"
 
 
+def library_root() -> Path:
+    """Where the browsable library trees live (the old prepare-sd-cards `input/`).
+
+    The source store holds hashed blobs; scans, configs and the stagers need real
+    folders with real names, so each fetched/staged library is a tree of hardlinks to
+    store entries under <cache root>/library/<name>/. It is part of the cache, not of
+    any repo: every project that fetches or stages a library puts it here, and
+    PATCH_PRESS_CACHE_DIR moves the whole thing. Same filesystem as the store (hardlinks).
+    """
+    return cache_root() / "library"
+
+
 def _key(*parts: object) -> str:
     h = hashlib.sha256(repr((SOURCE_CACHE_VERSION, *parts)).encode())
     return h.hexdigest()[:40]
