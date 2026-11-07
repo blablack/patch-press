@@ -92,21 +92,32 @@ def _cache() -> diskcache.Cache:
     return c
 
 
+def count(c: diskcache.Cache, name: str) -> None:
+    """Bump a hit/miss counter kept inside the cache itself, so it spans processes
+    (read by tools/cache_stats.py). Never lets bookkeeping break a render."""
+    try:
+        c.incr(f"~{name}")
+    except Exception:
+        pass
+
+
 def lookup(key: str, duration_s: float, sample_rate: int) -> np.ndarray | None:
     """Stored audio (2, N) covering `duration_s`, cut to exactly that length, or None."""
     if not enabled():
         return None
     want_frames = int(round(duration_s * sample_rate))
     try:
-        entry = _cache().get(key)
+        c = _cache()
+        entry = c.get(key)
     except Exception:  # a broken cache must never break a render
         return None
-    if entry is None:
-        return None
-    stored_s, data = entry
-    if stored_s < duration_s - 1e-6 or data.ndim != 2 or data.shape[1] < want_frames:
-        return None
-    return data[:, :want_frames].copy()
+    if entry is not None:
+        stored_s, data = entry
+        if stored_s >= duration_s - 1e-6 and data.ndim == 2 and data.shape[1] >= want_frames:
+            count(c, "hits")
+            return data[:, :want_frames].copy()
+    count(c, "misses")
+    return None
 
 
 def store(key: str, duration_s: float, data: np.ndarray) -> None:

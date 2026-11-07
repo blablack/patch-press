@@ -55,6 +55,7 @@ def _init_worker(level: int) -> None:
     )
     suppress_noisy_loggers()
 
+from ..cache import analysis as analysis_cache
 from ..config.schema import AnalysisConfig
 from ..model.audio import AudioBuffer
 from ..model.sample import Category, Sample, SampleSet
@@ -122,7 +123,41 @@ def _envelope_only(sample: Sample, bpm: float | None) -> Sample:
 
 
 def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
+    """One sample through trim / envelope / pitch / loop detection, via the shared analysis
+    cache (cache/analysis.py): a hit rebuilds the sample from the stored small result and a
+    slice of the input audio, a miss computes it and stores that result."""
+    key = analysis_cache.make_key(sample, config)
+    hit = analysis_cache.lookup(key)
+    if hit is not None:
+        audio = AudioBuffer(data=sample.audio.data[:, hit["lead"] : hit["trail"]], sample_rate=sample.audio.sample_rate)
+        return Sample(
+            note=sample.note,
+            velocity=sample.velocity,
+            round_robin=sample.round_robin,
+            audio=audio,
+            loop_points=hit["loop_points"],
+            analysis=hit["analysis"],
+            metadata=hit["metadata"],
+            note_off=hit["note_off"],
+        )
+    out, lead, trail = _analyze_compute(sample, config)
+    analysis_cache.store(
+        key,
+        {
+            "lead": lead,
+            "trail": trail,
+            "loop_points": out.loop_points,
+            "analysis": out.analysis,
+            "metadata": out.metadata,
+            "note_off": out.note_off,
+        },
+    )
+    return out
+
+
+def _analyze_compute(sample: Sample, config: AnalysisConfig) -> tuple[Sample, int, int]:
     audio = sample.audio
+    trail = audio.num_frames
     analysis = dict(sample.analysis)
 
     # An authored loop (from a library WAV's smpl chunk) is ground truth: use it verbatim,
@@ -217,15 +252,19 @@ def _analyze_one(sample: Sample, config: AnalysisConfig) -> Sample:
                     analysis["loop_quality"] = None
                     analysis["loop_warning"] = "no_suitable_loop_found"
 
-    return Sample(
-        note=sample.note,
-        velocity=sample.velocity,
-        round_robin=sample.round_robin,
-        audio=audio,
-        loop_points=loop_points,
-        analysis=analysis,
-        metadata=metadata,
-        note_off=note_off,
+    return (
+        Sample(
+            note=sample.note,
+            velocity=sample.velocity,
+            round_robin=sample.round_robin,
+            audio=audio,
+            loop_points=loop_points,
+            analysis=analysis,
+            metadata=metadata,
+            note_off=note_off,
+        ),
+        lead,
+        trail,
     )
 
 
