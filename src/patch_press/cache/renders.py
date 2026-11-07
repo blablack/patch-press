@@ -101,7 +101,19 @@ def count(c: diskcache.Cache, name: str) -> None:
         pass
 
 
-def lookup(key: str, duration_s: float, sample_rate: int) -> np.ndarray | None:
+def _log_miss(key: str, why: str, duration_s: float, stored_s: float | None, info: dict | None) -> None:
+    """Debug aid: PATCH_PRESS_CACHE_LOG=<file> appends one JSON line per miss (why it missed)."""
+    path = os.environ.get("PATCH_PRESS_CACHE_LOG")
+    if not path:
+        return
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps({"key": key, "why": why, "want_s": duration_s, "stored_s": stored_s, **(info or {})}) + "\n")
+    except OSError:
+        pass
+
+
+def lookup(key: str, duration_s: float, sample_rate: int, info: dict | None = None) -> np.ndarray | None:
     """Stored audio (2, N) covering `duration_s`, cut to exactly that length, or None."""
     if not enabled():
         return None
@@ -116,6 +128,9 @@ def lookup(key: str, duration_s: float, sample_rate: int) -> np.ndarray | None:
         if stored_s >= duration_s - 1e-6 and data.ndim == 2 and data.shape[1] >= want_frames:
             count(c, "hits")
             return data[:, :want_frames].copy()
+        _log_miss(key, "stored entry too short", duration_s, stored_s, info)
+    else:
+        _log_miss(key, "no entry", duration_s, None, info)
     count(c, "misses")
     return None
 

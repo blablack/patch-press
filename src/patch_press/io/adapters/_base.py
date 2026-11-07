@@ -90,7 +90,19 @@ class PluginAdapterBase(Generic[_ConfigT]):
         # and an entry rendered longer than asked is cut down, so one project's longer render
         # serves another's shorter one.
         key = render_cache.render_key(payload, hold_s)
-        cached = render_cache.lookup(key, payload["duration"], sample_rate)
+        cached = render_cache.lookup(
+            key,
+            payload["duration"],
+            sample_rate,
+            info={
+                "plugin_id": payload.get("plugin_id"),
+                "state": __import__("hashlib").sha256(payload["raw_state"].encode()).hexdigest()[:10],
+                "note": note,
+                "vel": velocity,
+                "hold": hold_s,
+                "total": total_s,
+            },
+        )
         if cached is not None:
             return AudioBuffer(data=cached, sample_rate=sample_rate)
 
