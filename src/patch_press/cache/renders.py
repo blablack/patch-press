@@ -125,7 +125,7 @@ def lookup(key: str, duration_s: float, sample_rate: int, info: dict | None = No
         return None
     if entry is not None:
         stored_s, data = entry
-        if stored_s >= duration_s - 1e-6 and data.ndim == 2 and data.shape[1] >= want_frames:
+        if stored_s >= duration_s - 1e-6 and data.ndim == 2 and data.shape[1] >= want_frames - 2:  # the renderer can come up a frame short (float truncation); a fresh render would too
             count(c, "hits")
             return data[:, :want_frames].copy()
         _log_miss(key, "stored entry too short", duration_s, stored_s, info)
