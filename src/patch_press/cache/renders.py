@@ -15,7 +15,7 @@ at 2 s can't be derived from one held for 4 s.
 
 Env: PATCH_PRESS_CACHE=0 disables; PATCH_PRESS_CACHE_DIR overrides the location
 (default $XDG_CACHE_HOME/patch-press, i.e. ~/.cache/patch-press); PATCH_PRESS_CACHE_GB
-caps the render store (default 40, least-recently-used entries evicted first).
+caps the render store (default 100; the full Deluge+Bento+patch-ear set is ~65 GB, least-recently-used entries evicted first).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def _cache() -> diskcache.Cache:
     d = str(_render_dir())
     c = _caches.get(d)
     if c is None:
-        cap = int(float(os.environ.get("PATCH_PRESS_CACHE_GB", "40")) * 1e9)
+        cap = int(float(os.environ.get("PATCH_PRESS_CACHE_GB", "100")) * 1e9)
         c = _caches[d] = diskcache.Cache(d, size_limit=cap, eviction_policy="least-recently-used")
     return c
 
