@@ -36,11 +36,23 @@ def _f2i(s: str | None, default: int = 0) -> int:
     return int(round(float(s)))
 
 
+def _track_on(s: str | None) -> bool:
+    """Whether a zone follows the keyboard. Older files write a number ('1.0000'), newer ones 'true'/'false'."""
+    if s is None or s == "":
+        return True
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    return float(s) != 0.0
+
+
 def parse_multisample_xml(xml_bytes: bytes) -> list[Zone]:
-    """Parse a `multisample.xml` document into a flat list of zones."""
+    """Parse a `multisample.xml` document into a flat list of zones.
+
+    Older files hold `<sample>` directly under the root; newer Bitwig versions wrap them in a `<layer>`, so look at any depth.
+    """
     root = ET.fromstring(xml_bytes)
     zones: list[Zone] = []
-    for s in root.findall("sample"):
+    for s in root.iter("sample"):
         key = s.find("key")
         if key is None or key.get("root") is None:
             continue  # a zone with no root note can't be mapped
@@ -64,7 +76,7 @@ def parse_multisample_xml(xml_bytes: bytes) -> list[Zone]:
                 root=_f2i(key.get("root")),
                 vel_low=vlow,
                 vel_high=vhigh,
-                track=float(key.get("track", "1") or "1") != 0.0,
+                track=_track_on(key.get("track")),
                 gain_db=float(s.get("gain", "0") or "0"),
                 sample_start=_f2i(s.get("sample-start"), 0),
                 sample_stop=_f2i(s.get("sample-stop"), 0),
