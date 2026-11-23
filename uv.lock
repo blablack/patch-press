@@ -760,7 +760,7 @@ requires-dist = [
     { name = "diskcache", specifier = ">=5.6.3" },
     { name = "librosa" },
     { name = "lxml" },
-    { name = "patch-render" },
+    { name = "patch-render", specifier = ">=0.4.0" },
     { name = "pyyaml" },
     { name = "soundfile" },
     { name = "soxr" },
@@ -775,12 +775,12 @@ dev = [
 
 [[package]]
 name = "patch-render"
-version = "0.3.2"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/cf/1458439a21df3ac1f63c7ace1235e73139daaa5077f963f992786daf87d2/patch_render-0.3.2-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:23bb8e1cc54915a458ec0eae5ed966858c09dec0bf7a06eb2c28b26ac3379095", size = 19265923, upload-time = "2026-08-22T15:53:05.002Z" },
-    { url = "https://files.pythonhosted.org/packages/20/05/d0b03ee49899198de998d865042d6a16a4dcf639046ea0250fe401b61702/patch_render-0.3.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:1a2301e41b8ee93d211915224711dd535aa353bad076a6fed0f8d1ddcb37f779", size = 19069356, upload-time = "2026-08-22T15:53:07.32Z" },
-    { url = "https://files.pythonhosted.org/packages/a3/2b/203300114ba388633b5321fd74d4cb2065f12706377bc9381d7f7a097f82/patch_render-0.3.2-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:1c9e8a480a09801404a318f890dc9ecd0d4737a9c4273d68225ee2beb39c6ef9", size = 20763717, upload-time = "2026-08-22T15:53:09.664Z" },
+    { url = "https://files.pythonhosted.org/packages/45/b4/fbcd107f8bc845be6d6d56a49546063ad0459797b31c8518178e1fbbfe86/patch_render-0.4.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:21f537d855d0fc5580e5e2cb0e9030de9b1e46ebe29c0e33b637b9a441e77a9c", size = 22133520, upload-time = "2026-11-23T23:27:34.816Z" },
+    { url = "https://files.pythonhosted.org/packages/74/41/fbeeff431155cea36c241fada35a5e78c2badf308f870b3f2530c7bd237d/patch_render-0.4.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:b0a9727c1b84c2e020c0bc309143bc2b8b76c1b96907b6cbfd7cfc28547cae12", size = 21866957, upload-time = "2026-11-23T23:27:37.591Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/06/42187f2a91470fc6b0ea8b2cd167358012564b48c4281336b50589fc5c66/patch_render-0.4.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:a6b9234637d65ed0420b5311ce9219fc5bbb570bf4678389bf1b5e26671a3b00", size = 23854365, upload-time = "2026-11-23T23:27:40.957Z" },
 ]
 
 [[package]]
