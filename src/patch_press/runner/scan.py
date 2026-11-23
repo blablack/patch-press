@@ -28,7 +28,7 @@ from ..analysis.probe import (
 from ..analysis.velocity import is_velocity_sensitive, velocity_timbre_shift
 from ..analysis.granular import MIN_SECONDS, stable_position
 from ..analysis.wavetable import _ARCHETYPES, classify_archetype, pair_tables, table_vector
-from ..config.schema import CLAPSourceConfig, VSTSourceConfig
+from ..config.schema import CLAPSourceConfig, FxConfig, VSTSourceConfig
 from ..io.adapters.clap import CLAPAdapter
 from ..io.adapters.h2p import performance_yaml, read_performance
 from ..io.adapters.library import _parse_note_rr
@@ -530,6 +530,24 @@ def scan_from_probe(
     return summary
 
 
+def _fx_chain_yaml(fx_chain: list[FxConfig] | None) -> str:
+    """The `source.fx_chain` block (serial VST3 effects rendered after the synth), or ''."""
+    if not fx_chain:
+        return ""
+    out = "  fx_chain:\n"
+    for fx in fx_chain:
+        out += f"    - plugin: {fx.plugin}\n      raw_state: \"{fx.raw_state}\"\n"
+    return out
+
+
+def load_fx_probe(yaml_path: Path) -> FxConfig:
+    """A patch-probe YAML (plugin + raw_state) as an FX-chain entry."""
+    _, cfg = _parse_probe_yaml(yaml_path)
+    if not cfg.raw_state:
+        raise ValueError(f"{yaml_path}: no raw_state to restore the effect's preset from")
+    return FxConfig(plugin=cfg.plugin, raw_state=cfg.raw_state)
+
+
 def _write_clap_config(
     preset_name: str,
     plugin_path: Path,
@@ -544,6 +562,7 @@ def _write_clap_config(
     used_stems: set[str],
     sample_rate: int = 48000,
     subfolder: str = "",
+    fx_chain: list[FxConfig] | None = None,
 ) -> Path:
     source_lines = (
         f"  type: clap\n"
@@ -551,7 +570,7 @@ def _write_clap_config(
         f"  plugin_id: {plugin_id}\n"
         f'  preset: "{preset_name}"\n'
         f"  preset_path: {_yaml_path(preset_path)}\n"
-    )
+    ) + _fx_chain_yaml(fx_chain)
     content = _config_yaml(
         preset_name, source_lines, result, profile, note_step, note_lo, note_hi, sample_rate, subfolder=subfolder,
         performance_lines=performance_yaml(read_performance(preset_path)),
@@ -603,8 +622,12 @@ def scan_clap(
     sample_rate: int = 48000,
     tempo_bpm: float = 120.0,
     collection_root: Path | None = None,
+    fx_chain: list[FxConfig] | None = None,
 ) -> ScanSummary:
     """Scan CLAP presets from a directory of .clap-preset files.
+
+    `fx_chain`: serial VST3 effects rendered after every preset. The probe renders go through
+    them too (so classification hears what ships) and they're written into each config.
 
     Discovers the plugin_id automatically via patch_render.list_clap_plugins(),
     then probes each .clap-preset file to generate config YAMLs.
@@ -667,7 +690,9 @@ def scan_clap(
 
     tqdm.write(f"Found {len(state_map)} preset(s) in {preset_dir}")
     adapter = CLAPAdapter(
-        CLAPSourceConfig(plugin=plugin_path, plugin_id=plugin_id, preset=next(iter(state_map))),
+        CLAPSourceConfig(
+            plugin=plugin_path, plugin_id=plugin_id, preset=next(iter(state_map)), fx_chain=list(fx_chain or [])
+        ),
         state_map=state_map,
     )
 
@@ -760,6 +785,7 @@ def scan_clap(
             used_stems,
             sample_rate=sample_rate,
             subfolder=subfolder,
+            fx_chain=fx_chain,
         )
         summary.written.append(path)
         if result.confidence != "high" or result.flags:

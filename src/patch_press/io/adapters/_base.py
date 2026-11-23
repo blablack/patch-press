@@ -86,6 +86,10 @@ class PluginAdapterBase(Generic[_ConfigT]):
             ],
             **self._render_payload_extra(),
         }
+        if self._config.fx_chain:
+            # Serial VST3 effects after the synth (patch-render `fx_chain`). Part of the cache key
+            # via the payload, so an amped render never aliases the dry one.
+            payload["fx_chain"] = [{"plugin": str(f.plugin), "raw_state": f.raw_state} for f in self._config.fx_chain]
         # Shared on-disk cache (patch_press.cache.renders): a hit skips the plugin entirely,
         # and an entry rendered longer than asked is cut down, so one project's longer render
         # serves another's shorter one.

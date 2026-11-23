@@ -4,10 +4,19 @@ from typing import Optional, Union
 
 
 @dataclass
+class FxConfig:
+    """One serial VST3 effect after the synth (patch-render's `fx_chain` entry)."""
+
+    plugin: Path
+    raw_state: str = ""
+
+
+@dataclass
 class VSTSourceConfig:
     plugin: Path
     preset: Optional[str] = None
     raw_state: Optional[str] = None
+    fx_chain: list[FxConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -17,6 +26,7 @@ class CLAPSourceConfig:
     preset: Optional[str] = None
     preset_path: Optional[Path] = None
     raw_state: Optional[str] = None
+    fx_chain: list[FxConfig] = field(default_factory=list)
 
 
 @dataclass

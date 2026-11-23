@@ -31,6 +31,7 @@ from ..runner.scan import (
     note_name_to_midi,
     scan_bitwig,
     scan_clap,
+    load_fx_probe,
     scan_from_probe,
     scan_kit_assemble,
     scan_library,
@@ -154,6 +155,7 @@ def cmd_scan_clap(args: argparse.Namespace) -> None:
         collection_root=(
             Path(os.path.abspath(args.collection_root)) if args.collection_root else None
         ),
+        fx_chain=[load_fx_probe(p) for p in args.fx_probe],
     )
     print(f"\n{len(summary.written)}/{summary.total} configs written to {args.config_dir}")
     if summary.reviews:
@@ -493,6 +495,15 @@ def main() -> None:
         default=120.0,
         metavar="BPM",
         help="Tempo for rhythm detection during classify (default: 120)",
+    )
+    scan_clap_p.add_argument(
+        "--fx-probe",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="YAML",
+        help="patch-probe YAML of a VST3 effect to render every preset through (repeatable, applied in "
+        "order). Written into each config's source.fx_chain.",
     )
     scan_clap_p.add_argument("--probe-note", type=int, default=60, metavar="MIDI")
     scan_clap_p.add_argument("--probe-velocity", type=int, default=100, metavar="VEL")

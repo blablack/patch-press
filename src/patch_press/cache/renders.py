@@ -74,6 +74,11 @@ def render_key(payload: dict, hold_s: float) -> str:
         "state": hashlib.sha256((payload.get("raw_state") or "").encode()).hexdigest(),
         "midi": midi,
     }
+    if payload.get("fx_chain"):
+        # Marker for amped renders only, so dry keys are untouched. Bumped to 2 when patch-render
+        # started honouring `fx_chain` in render_clap(): an older wheel ignored it silently and
+        # stored dry audio under these keys.
+        material["fx_v"] = 2
     blob = json.dumps(material, sort_keys=True, default=str).encode()
     return hashlib.sha256(blob).hexdigest()[:32]
 

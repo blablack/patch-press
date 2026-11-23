@@ -11,6 +11,7 @@ from .schema import (
     MappedSourceConfig,
     CaptureConfig,
     CLAPSourceConfig,
+    FxConfig,
     LibrarySourceConfig,
     OutputConfig,
     PerformanceConfig,
@@ -79,11 +80,13 @@ def load_config(path: Path) -> RunConfig:
         return p if p.is_absolute() else (config_dir / p).resolve()
 
     src = raw["source"]
+    fx_chain = [FxConfig(plugin=_abspath(f["plugin"]), raw_state=f.get("raw_state") or "") for f in src.get("fx_chain") or []]
     if src["type"] == "vst":
         source = VSTSourceConfig(
             plugin=_abspath(src["plugin"]),
             preset=src.get("preset"),
             raw_state=src.get("raw_state"),
+            fx_chain=fx_chain,
         )
     elif src["type"] == "clap":
         source = CLAPSourceConfig(
@@ -92,6 +95,7 @@ def load_config(path: Path) -> RunConfig:
             preset=src.get("preset"),
             preset_path=_abspath(src["preset_path"]) if src.get("preset_path") else None,
             raw_state=src.get("raw_state"),
+            fx_chain=fx_chain,
         )
     elif src["type"] == "library":
         source = LibrarySourceConfig(
