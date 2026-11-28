@@ -15,11 +15,24 @@ from ...model.audio import AudioBuffer
 from ...model.sample import Category, Sample, SampleSet
 
 _SAMPLE_RATE = 48000
-# Lead-in silence before note-on so the sample starts with clean silence rather
-# than a burst onset.
+# Rendered before note-on and then cut away (_drop_lead_in): room for whatever a plugin
+# emits while it starts up (an init burst, an amp's power-on click) to land outside the
+# sample instead of at its start.
 _INIT_LEAD_S = 5.0
 
 _ConfigT = TypeVar("_ConfigT")
+
+
+def _drop_lead_in(audio: AudioBuffer) -> AudioBuffer:
+    """The render from note-on on: the _INIT_LEAD_S before it cut at its known length.
+
+    Not left for the silence trim to find. The lead-in is only silent for a quiet plugin:
+    through a guitar-amp FX chain it carries the amp's power-on click and its hiss, the trim
+    (relative to the note's peak) took the click for the note's onset, and every sample of
+    the four Tangie-amped patches shipped with 5 s of hiss before the note.
+    """
+    lead = round(_INIT_LEAD_S * audio.sample_rate)
+    return AudioBuffer(data=audio.data[:, lead:], sample_rate=audio.sample_rate)
 
 
 class PluginAdapterBase(Generic[_ConfigT]):
@@ -136,12 +149,10 @@ class PluginAdapterBase(Generic[_ConfigT]):
         The scan times everything (`hold_s` as the note-off, its probe windows) from the
         start of the buffer, so the _INIT_LEAD_S lead-in _render puts before note-on is
         dropped here. Left in, every note-off the scan measured landed 5 s early and its
-        release tail came out 5 s long. The capture path keeps it instead, and trims it
-        away as silence.
+        release tail came out 5 s long.
         """
         audio = self._render(self._current_raw_state, note, velocity, hold_s, total_s, tempo_bpm, sample_rate)
-        lead = round(_INIT_LEAD_S * audio.sample_rate)
-        return AudioBuffer(data=audio.data[:, lead:], sample_rate=audio.sample_rate)
+        return _drop_lead_in(audio)
 
     def capture(
         self,
@@ -180,14 +191,16 @@ class PluginAdapterBase(Generic[_ConfigT]):
                             pbar.set_postfix(note=note, vel=vel, rr=rr)
                         else:
                             pbar.set_postfix_str(f"{sset_name} n{note}")
-                        audio = self._render(
-                            self._current_raw_state,
-                            note,
-                            vel,
-                            capture.duration_s,
-                            capture.duration_s + capture.release_tail_s,
-                            capture.tempo_bpm,
-                            capture.sample_rate,
+                        audio = _drop_lead_in(
+                            self._render(
+                                self._current_raw_state,
+                                note,
+                                vel,
+                                capture.duration_s,
+                                capture.duration_s + capture.release_tail_s,
+                                capture.tempo_bpm,
+                                capture.sample_rate,
+                            )
                         )
                         if capture.mono:
                             # The scan measured this preset's two channels as the same
@@ -204,8 +217,7 @@ class PluginAdapterBase(Generic[_ConfigT]):
                                 velocity=vel,
                                 round_robin=rr,
                                 audio=audio,
-                                # The render starts _INIT_LEAD_S before note-on (_render).
-                                note_off=round((_INIT_LEAD_S + capture.duration_s) * capture.sample_rate),
+                                note_off=round(capture.duration_s * capture.sample_rate),
                                 metadata={"mono": True} if capture.mono else {},
                             )
                         )
