@@ -27,7 +27,7 @@ from pathlib import Path
 import diskcache
 import numpy as np
 
-from .renders import cache_root, count
+from .renders import NO_SELF_CULL, cache_root, count
 from .renders import enabled as _cache_enabled
 
 
@@ -57,9 +57,8 @@ def code_version() -> str:
 def _cache() -> diskcache.Cache:
     d = str(cache_root() / "analysis-dc")
     c = _caches.get(d)
-    if c is None:
-        cap = int(float(os.environ.get("PATCH_PRESS_ANALYSIS_GB", "5")) * 1e9)
-        c = _caches[d] = diskcache.Cache(d, size_limit=cap, eviction_policy="least-recently-used")
+    if c is None:  # counted in the shared cap (cache.evict.trim), never culled on its own
+        c = _caches[d] = diskcache.Cache(d, size_limit=NO_SELF_CULL, eviction_policy="least-recently-used")
     return c
 
 
