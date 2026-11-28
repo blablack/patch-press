@@ -14,8 +14,10 @@ how long the render runs) provided note-off is in the key, which it is — a not
 at 2 s can't be derived from one held for 4 s.
 
 Env: PATCH_PRESS_CACHE=0 disables; PATCH_PRESS_CACHE_DIR overrides the location
-(default $XDG_CACHE_HOME/patch-press, i.e. ~/.cache/patch-press); PATCH_PRESS_CACHE_GB
-caps the render store (default 100; the full Deluge+Bento+patch-ear set is ~65 GB, least-recently-used entries evicted first).
+(default $XDG_CACHE_HOME/patch-press, i.e. ~/.cache/patch-press); PATCH_PRESS_CACHE_GB is the
+one size cap for the whole cache (renders + analysis + source store, default 150), enforced by
+`cache.evict.trim()` at the end of a run, least recently used first. diskcache's own culling is
+switched off (size_limit huge) so one layer can't evict on its own behind the shared cap.
 """
 
 from __future__ import annotations
@@ -43,6 +45,16 @@ def cache_root() -> Path:
         return Path(override)
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "patch-press"
+
+
+def cap_bytes() -> int:
+    """The one size cap for the whole cache dir (renders + analysis + source store)."""
+    return int(float(os.environ.get("PATCH_PRESS_CACHE_GB", "150")) * 1e9)
+
+
+# diskcache's own size_limit: never reached, so it never culls by itself. The shared cap is
+# applied across every layer by cache.evict.trim().
+NO_SELF_CULL = 2**62
 
 
 def _render_dir() -> Path:
@@ -88,12 +100,12 @@ _caches: dict[str, diskcache.Cache] = {}
 
 def _cache() -> diskcache.Cache:
     """The process-wide diskcache.Cache for renders (SQLite index + blob files; safe across
-    threads, forks and concurrent processes, LRU-evicted to the size cap)."""
+    threads, forks and concurrent processes). The LRU policy keeps access_time current on
+    every hit; cache.evict.trim() reads it to evict across the whole cache."""
     d = str(_render_dir())
     c = _caches.get(d)
     if c is None:
-        cap = int(float(os.environ.get("PATCH_PRESS_CACHE_GB", "100")) * 1e9)
-        c = _caches[d] = diskcache.Cache(d, size_limit=cap, eviction_policy="least-recently-used")
+        c = _caches[d] = diskcache.Cache(d, size_limit=NO_SELF_CULL, eviction_policy="least-recently-used")
     return c
 
 
